@@ -401,38 +401,51 @@ function createApp(opts) {
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000; server.keepAliveTimeout = 5000;
   server.on('clientError', (e, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); });
-  /* verifyProxy(send): two probe requests through the real public path (the app calls its own PUBLIC_ORIGIN) with DIFFERENT forged values of the
-     proxy header. Verified only if, both times: the app received exactly one value; it is a single public IP; it is NOT the forged value; the
-     TCP peer is a trusted proxy; and the value is identical across the two runs (derived from the connection, not echoed from the client). */
+  /* verifyProxy(send): probes through the real public path (the app calls its own PUBLIC_ORIGIN): a CONTROL request without the header, then two
+     requests with DIFFERENT forged values. Verified only if the control carries exactly one public IP from a trusted proxy peer, and each forged
+     request is either overwritten with that same value or rejected (403) before reaching the app. */
   const defaultProbeSend = ({ path: p, headers }) => new Promise((resolve, reject) => {
-    const u = new URL(cfg.publicOrigin), r = https.request({ host: u.hostname, port: u.port || 443, path: p, method: 'GET', headers: Object.assign({ 'User-Agent': 'myturn-proxycheck' }, headers), timeout: 8000 }, x => { x.resume(); x.on('end', resolve); });
+    const u = new URL(cfg.publicOrigin), r = https.request({ host: u.hostname, port: u.port || 443, path: p, method: 'GET', headers: Object.assign({ 'User-Agent': 'myturn-proxycheck' }, headers), timeout: 8000 }, x => { x.resume(); x.on('end', () => resolve({ status: x.statusCode })); });
     r.on('timeout', () => r.destroy(new Error('timeout'))); r.on('error', reject); r.end();
   });
   async function verifyProxy(send) {
     if (!needsProxyProof) return { ok: true, why: 'not-required' };
-    const seenIps = []; let why = null, v = crypto.randomInt(250);
-    for (let i = 0; i < 2 && !why; i++) {
-      if (i) v = (v + crypto.randomInt(1, 250)) % 250;             // the second forged value is always different from the first
-      const nonce = crypto.randomBytes(24).toString('base64url'), forged = '192.0.2.' + (v + 1), rec = { seen: null };   // 192.0.2.0/24 = documentation range, never a real client
+    const doSend = send || defaultProbeSend;
+    const probe = async headers => {                                // one request through the real public path; returns what the app saw + the HTTP status the caller got
+      const nonce = crypto.randomBytes(24).toString('base64url'), rec = { seen: null }; let status, failed = false;
       pendingChecks.set(nonce, rec);
-      try { await (send || defaultProbeSend)({ path: '/__proxycheck/' + nonce, headers: { [cfg.proxyHeader]: forged } }); } catch (e) { why = 'self-request-failed'; }
-      pendingChecks.delete(nonce);
-      if (why) break;
-      const s = rec.seen;
-      if (!s) why = 'request-not-seen';
-      else if (!auth.isTrustedPeer(s.peer, proxyTrust)) why = 'peer-not-trusted';
-      else if (s.values.length === 0) why = 'header-absent';
-      else if (s.values.length > 1) why = 'header-duplicated';
-      else if (String(s.values[0]).includes(',')) why = 'header-chained';
-      else if (!auth.normalizeIp(s.values[0])) why = 'header-invalid';
-      else if (auth.normalizeIp(s.values[0]) === forged) why = 'client-value-passed-through';
-      else if (!auth.isPublicAddr(s.values[0])) why = 'header-not-a-public-address';
-      else seenIps.push(auth.normalizeIp(s.values[0]));
+      try { const r = await doSend({ path: '/__proxycheck/' + nonce, headers }); status = r && r.status; } catch (e) { failed = true; }
+      pendingChecks.delete(nonce); return { seen: rec.seen, status, failed };
+    };
+    const judge = s => {                                            // -> { why } or { ip }: is this one observation a single, public IP from a trusted proxy peer?
+      if (!s) return { why: 'request-not-seen' };
+      if (!auth.isTrustedPeer(s.peer, proxyTrust)) return { why: 'peer-not-trusted' };
+      if (s.values.length === 0) return { why: 'header-absent' };
+      if (s.values.length > 1) return { why: 'header-duplicated' };
+      if (String(s.values[0]).includes(',')) return { why: 'header-chained' };
+      const ip = auth.normalizeIp(s.values[0]); if (!ip) return { why: 'header-invalid' };
+      if (!auth.isPublicAddr(ip)) return { why: 'header-not-a-public-address' };
+      return { ip };
+    };
+    // 1) CONTROL: with no client-supplied value the app must receive exactly one public IP from the proxy.
+    const ctl = await probe({}); let why = null, how = 'overwritten';
+    const c = ctl.failed ? { why: 'self-request-failed' } : judge(ctl.seen);
+    if (c.why) why = c.why;
+    // 2) FORGED (two different values, documentation range 192.0.2.0/24 = never a real client): each must be overwritten by the proxy with the
+    //    same value as the control, or REJECTED before it reaches the app (HTTP 403, e.g. Cloudflare answers "error 1000" to a client-supplied
+    //    CF-Connecting-IP). A forged value that reaches the app unchanged, or any other outcome, fails the proof.
+    let v = crypto.randomInt(250);
+    for (let i = 0; i < 2 && !why; i++) {
+      if (i) v = (v + crypto.randomInt(1, 250)) % 250;
+      const forged = '192.0.2.' + (v + 1), f = await probe({ [cfg.proxyHeader]: forged });
+      if (f.failed) { why = 'self-request-failed'; break; }
+      if (!f.seen) { if (f.status === 403) { how = 'rejected'; continue; } why = 'request-not-seen'; break; }
+      const j = judge(f.seen);
+      if (j.why) why = j.why; else if (j.ip === forged) why = 'client-value-passed-through'; else if (j.ip !== c.ip) why = 'value-not-stable';
     }
-    if (!why && seenIps[0] !== seenIps[1]) why = 'value-not-stable';
     const ok = !why, changed = ok !== proxyVerified || lastProxyWhy !== (why || 'ok');
     proxyVerified = ok; lastProxyWhy = why || 'ok';
-    if (changed) info(ok ? 'Proxy header verification PASSED: ' + cfg.proxyHeader + ' is overwritten by the proxy (forged values did not pass through); per-client throttling and sign-in are enabled.'
+    if (changed) info(ok ? 'Proxy header verification PASSED: ' + cfg.proxyHeader + ' is set by the proxy and forged values were ' + (how === 'rejected' ? 'rejected before reaching the app' : 'overwritten') + '; per-client throttling and sign-in are enabled.'
       : 'Proxy header verification NOT passed (' + why + '): ' + cfg.proxyHeader + ' is not trusted, so sign-in is refused. It is retried automatically. If the cause persists see DEPLOYMENT.md (or attest with PROXY_HEADER_VERIFIED=1 only after checking manually).');
     return { ok, why: why || 'ok' };
   }

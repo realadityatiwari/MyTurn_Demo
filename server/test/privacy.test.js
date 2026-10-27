@@ -171,24 +171,30 @@ const flat = o => JSON.stringify(o);
     // ---------- Render: cf-connecting-ip is trusted only after the app has PROVEN the proxy overwrites it ----------
     let PRX = '172.16.9.9'; const glogs = [], REAL = '203.0.113.200';
     const gate = await mk({ auth: { proxyHeader: 'cf-connecting-ip' }, rest: { peerAddress: () => PRX, logInfo: m => glogs.push(m) } });
-    const simulate = (transform, skip) => async ({ path: p, headers }) => {                  // a simulated proxy in front of the app: rewrites the headers the app will see
-      if (skip) return; const h = transform(Object.assign({}, headers));
+    const simulate = (transform, skip) => async ({ path: p, headers }) => {                  // a simulated proxy in front of the app: rewrites the headers the app will see; transform -> null = the edge answers 403 itself
+      if (skip) return; const h = transform(Object.assign({}, headers)); if (h === null) return { status: 403 }; if (h === 'r500') return { status: 500 };
       await new Promise((res, rej) => { const r = http.request({ host: '127.0.0.1', port: gate.port, path: p, headers: h, agent: false }, x => { x.resume(); x.on('end', res); }); r.on('error', rej); r.end(); });
     };
-    const modes = { overwrite: simulate(h => Object.assign(h, { 'cf-connecting-ip': REAL })), passthrough: simulate(h => h), strip: simulate(h => { delete h['cf-connecting-ip']; return h; }),
-      chained: simulate(h => Object.assign(h, { 'cf-connecting-ip': REAL + ', 198.51.100.9' })), duplicated: simulate(h => Object.assign(h, { 'cf-connecting-ip': [h['cf-connecting-ip'], REAL] })),
+    const setDefault = h => { if (!h['cf-connecting-ip']) h['cf-connecting-ip'] = REAL; return h; };   // a naive proxy: sets the header only when the client did not
+    const modes = { overwrite: simulate(h => Object.assign(h, { 'cf-connecting-ip': REAL })), passthrough: simulate(setDefault), strip: simulate(h => { delete h['cf-connecting-ip']; return h; }),
+      chained: simulate(h => Object.assign(h, { 'cf-connecting-ip': REAL + ', 198.51.100.9' })), duplicated: simulate(h => Object.assign(h, { 'cf-connecting-ip': [REAL, REAL] })),
       malformed: simulate(h => Object.assign(h, { 'cf-connecting-ip': 'not-an-ip' })), privateAddr: simulate(h => Object.assign(h, { 'cf-connecting-ip': '10.0.0.5' })),
-      echoDerived: simulate(h => Object.assign(h, { 'cf-connecting-ip': '203.0.113.' + h['cf-connecting-ip'].split('.')[3] })),   // value derived from the client's: changes between the two probes
+      echoDerived: simulate(h => Object.assign(h, { 'cf-connecting-ip': h['cf-connecting-ip'] ? '203.0.113.' + h['cf-connecting-ip'].split('.')[3] : REAL })),   // value derived from the client's: differs from the control
+      edgeRejects: simulate(h => h['cf-connecting-ip'] ? null : setDefault(h)),                 // like Cloudflare: a client-supplied value gets 403 'error 1000'; the control carries the edge's own value
+      edgeRejects500: simulate(h => h['cf-connecting-ip'] ? 'r500' : setDefault(h)), edgeRejectsButNoHeader: simulate(h => h['cf-connecting-ip'] ? null : h),
       notSeen: simulate(h => h, true), failing: async () => { throw new Error('boom'); } };
     const gx = (hdr) => new Client(gate, hdr ? { 'cf-connecting-ip': hdr } : {});
     ok('proof gate: before any verification a valid header from the trusted peer is NOT enough: sign-in refused (503), /healthz says clientIp "unverified"', (await gx('203.0.113.1').login('operator', OP_PW)).status === 503 && JSON.parse((await gx().req('GET', '/healthz')).text).clientIp === 'unverified' && !gate.proxyState().verified);
     const verdicts = {}; for (const m of Object.keys(modes)) verdicts[m] = (await gate.verifyProxy(modes[m])).why;
     ok('proof gate: every unsafe proxy behaviour fails the proof with the right reason (pass-through, stripped, chained, duplicated, malformed, private, echo-derived, no request, request error)',
-      JSON.stringify(verdicts) === JSON.stringify({ overwrite: 'ok', passthrough: 'client-value-passed-through', strip: 'header-absent', chained: 'header-chained', duplicated: 'header-duplicated', malformed: 'header-invalid', privateAddr: 'header-not-a-public-address', echoDerived: 'value-not-stable', notSeen: 'request-not-seen', failing: 'self-request-failed' }), JSON.stringify(verdicts));
+      (() => { const want = { overwrite: 'ok', passthrough: 'client-value-passed-through', strip: 'header-absent', chained: 'header-chained', duplicated: 'header-duplicated', malformed: 'header-invalid', privateAddr: 'header-not-a-public-address', echoDerived: 'value-not-stable', edgeRejects: 'ok', edgeRejects500: 'request-not-seen', edgeRejectsButNoHeader: 'header-absent', notSeen: 'request-not-seen', failing: 'self-request-failed' }; return Object.keys(want).every(k => verdicts[k] === want[k]) && Object.keys(verdicts).length === Object.keys(want).length; })(), JSON.stringify(verdicts));
     await gate.verifyProxy(modes.passthrough);
     ok('proof gate: after a FAILED proof (client value passes through) sign-in stays refused even when the attacker supplies a "valid" header, and nothing is throttled per client', (await gx('203.0.113.1').login('operator', 'wrong')).status === 503 && (await gx('203.0.113.2').login('operator', OP_PW)).status === 503 && gate.proxyState().why === 'client-value-passed-through');
     PRX = '8.8.8.8'; const wrongPeer = await gate.verifyProxy(modes.overwrite); PRX = '172.16.9.9';
     ok('proof gate: the proof also fails when the TCP peer is not a trusted proxy', wrongPeer.why === 'peer-not-trusted' && !gate.proxyState().verified);
+    const edgeProof = await gate.verifyProxy(modes.edgeRejects);
+    ok('proof gate: an edge that REJECTS client-supplied values (403) while setting its own passes, and sign-in works (observed on Render: Cloudflare answers "error 1000")', edgeProof.ok && gate.proxyState().verified && glogs.some(l => /rejected before reaching the app/.test(l)) && (await gx('203.0.113.9').login('operator', OP_PW)).status === 200);
+    await gate.verifyProxy(modes.passthrough);
     const goodProof = await gate.verifyProxy(modes.overwrite);
     ok('proof gate: an overwriting proxy passes (two different forged values, identical single public result)', goodProof.ok && gate.proxyState().verified && JSON.parse((await gx().req('GET', '/healthz')).text).clientIp === 'verified' && glogs.some(l => /verification PASSED/.test(l)) && glogs.some(l => /NOT passed \(client-value-passed-through\)/.test(l)));
     const v1 = await gx('203.0.113.11').login('operator', OP_PW);

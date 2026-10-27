@@ -1,0 +1,14 @@
+# MyTurn — clinic queue: patients register and follow their turn, clinic staff run the shared queue
+Auth: staff sign in with a server-verified username and password (HttpOnly cookie); patients use the Telegram bot (website patient sign-in is disabled in production). No API key. See GET /__weeny for platform details.
+
+## Endpoints
+- GET  /healthz            → {"ok":true,"storage":"sqlite","telegram":"off|webhook","clientIp":"verified|unverified|n/a"}; 503 if storage is unavailable
+- GET  /                   → the MyTurn website (patient and staff phone demo, English and Hindi)
+- GET  /api/state          → shared queue snapshot, redacted for the caller's role (anonymous callers get statuses only, no names or tokens)
+- GET  /api/events         → server-sent events with the same redacted snapshot
+- GET  /api/auth/me        → who the server thinks you are
+- POST /api/auth/login {user,password} → staff sign-in; refused (503) until the proxy client-IP check has passed
+- POST /api/action {method,args} → queue commands; every command is authorized from the server-side session
+
+## Semantics
+Queue state is authoritative on the server and stored in SQLite under /data/myturn. Clients send commands, never state. Telegram registration is not enabled on this deployment.
