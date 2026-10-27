@@ -5,7 +5,7 @@
    - Optionally runs the Telegram bot (server/bot.js) when TELEGRAM_BOT_TOKEN is set.
    Run: node server/server.js        (see .env.example)                                                    */
 'use strict';
-const http = require('http'), crypto = require('crypto'), fs = require('fs'), path = require('path'), vm = require('vm');
+const http = require('http'), https = require('https'), crypto = require('crypto'), fs = require('fs'), path = require('path'), vm = require('vm');
 const auth = require('./auth'), { authConfig } = auth;
 const ROOT = path.resolve(__dirname, '..'), SITE = path.join(ROOT, 'site');
 
@@ -179,10 +179,18 @@ function createApp(opts) {
   const proxyTrust = cfg.trustedProxyCidrs ? auth.parseCidrs(cfg.trustedProxyCidrs).list : null;
   const peerOf = opts.peerAddress || (req => req.socket.remoteAddress);        // (override is for tests only)
   const seenReasons = new Set(), info = opts.logInfo || console.log;
+  /* cf-connecting-ip (Render) is not documented by the platform, so it is trusted ONLY after verifyProxy() has shown, through the real public
+     path, that the proxy overwrites a forged value (or the operator attested with PROXY_HEADER_VERIFIED=1). Until then every request is
+     "unidentified": sign-in is refused (fail closed) and no per-client bucket is used. Other headers keep their existing rules. */
+  const needsProxyProof = cfg.proxyHeader === 'cf-connecting-ip' && !cfg.proxyAttested;
+  let proxyVerified = !needsProxyProof, lastProxyWhy = needsProxyProof ? 'not-yet-checked' : 'attested-or-not-required';
+  const pendingChecks = new Map();                               // nonce -> { seen }: only requests carrying an unguessable nonce are ever answered
   const clientOf = req => {
     if (req._client) return req._client;
-    const peer = peerOf(req), c = auth.resolveClient({ peer, headers: req.headers, proxyHeader: cfg.proxyHeader, trust: proxyTrust });
-    if (cfg.proxyHeader && !seenReasons.has(c.reason)) {            // one-time operator diagnostics per situation; a client's own address is never logged
+    const peer = peerOf(req), c = (needsProxyProof && !proxyVerified)
+      ? { ip: null, trusted: false, reason: 'proxy-unverified' }
+      : auth.resolveClient({ peer, headers: req.headers, proxyHeader: cfg.proxyHeader, trust: proxyTrust });
+    if (cfg.proxyHeader && c.reason !== 'proxy-unverified' && !seenReasons.has(c.reason)) {            // one-time operator diagnostics per situation; a client's own address is never logged
       seenReasons.add(c.reason);
       if (c.reason === 'proxy') info('Proxy check: peer ' + (auth.normalizeIp(peer) || '?') + ' is a trusted proxy and header ' + cfg.proxyHeader + ' carries the client address - per-client throttling is active.');
       else info('WARNING (proxy check): client identity could not be established (' + c.reason + '). Forwarded headers from untrusted peers are ignored; sign-in is refused for such requests. ' +
@@ -324,8 +332,14 @@ function createApp(opts) {
   const tg = { mode: 'off', hook: null };                       // Telegram transport: 'off' | 'polling' | 'webhook' (set by the process that starts the bot)
   const route = (req, res) => {
     const url = (req.url || '/').split('?')[0];
-    if (url === '/healthz' && req.method === 'GET') { const ok = probe(); return send(res, ok ? 200 : 503, JSON.stringify({ ok, storage: db ? 'sqlite' : 'memory', telegram: tg.mode })); }
+    if (url === '/healthz' && req.method === 'GET') { const ok = probe(); return send(res, ok ? 200 : 503, JSON.stringify({ ok, storage: db ? 'sqlite' : 'memory', telegram: tg.mode, clientIp: needsProxyProof ? (proxyVerified ? 'verified' : 'unverified') : 'n/a' })); }
     if (!hostOk(req)) return send(res, 421, 'misdirected request', 'text/plain');
+    const pc = url.match(/^\/__proxycheck\/([A-Za-z0-9_-]{20,64})$/);
+    if (pc) {                                                    // self-check endpoint: answers only the pending nonce created by verifyProxy(); otherwise indistinguishable from 404
+      const p = req.method === 'GET' ? pendingChecks.get(pc[1]) : null; if (!p) return send(res, 404, '{"error":"not found"}');
+      const raw = []; for (let i = 0; i < req.rawHeaders.length; i += 2) if (req.rawHeaders[i].toLowerCase() === cfg.proxyHeader) raw.push(req.rawHeaders[i + 1]);
+      p.seen = { values: raw, peer: peerOf(req) }; return send(res, 204, '');
+    }
     if (url === '/telegram/webhook') {                          // ONLY accepts Telegram updates, authenticated by Telegram's secret-token header; it is not an action API
       if (!tg.hook) return send(res, 404, '{"error":"not found"}');
       if (req.method !== 'POST') return send(res, 405, '{"error":"method not allowed"}');
@@ -387,9 +401,51 @@ function createApp(opts) {
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000; server.keepAliveTimeout = 5000;
   server.on('clientError', (e, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); });
+  /* verifyProxy(send): two probe requests through the real public path (the app calls its own PUBLIC_ORIGIN) with DIFFERENT forged values of the
+     proxy header. Verified only if, both times: the app received exactly one value; it is a single public IP; it is NOT the forged value; the
+     TCP peer is a trusted proxy; and the value is identical across the two runs (derived from the connection, not echoed from the client). */
+  const defaultProbeSend = ({ path: p, headers }) => new Promise((resolve, reject) => {
+    const u = new URL(cfg.publicOrigin), r = https.request({ host: u.hostname, port: u.port || 443, path: p, method: 'GET', headers: Object.assign({ 'User-Agent': 'myturn-proxycheck' }, headers), timeout: 8000 }, x => { x.resume(); x.on('end', resolve); });
+    r.on('timeout', () => r.destroy(new Error('timeout'))); r.on('error', reject); r.end();
+  });
+  async function verifyProxy(send) {
+    if (!needsProxyProof) return { ok: true, why: 'not-required' };
+    const seenIps = []; let why = null, v = crypto.randomInt(250);
+    for (let i = 0; i < 2 && !why; i++) {
+      if (i) v = (v + crypto.randomInt(1, 250)) % 250;             // the second forged value is always different from the first
+      const nonce = crypto.randomBytes(24).toString('base64url'), forged = '192.0.2.' + (v + 1), rec = { seen: null };   // 192.0.2.0/24 = documentation range, never a real client
+      pendingChecks.set(nonce, rec);
+      try { await (send || defaultProbeSend)({ path: '/__proxycheck/' + nonce, headers: { [cfg.proxyHeader]: forged } }); } catch (e) { why = 'self-request-failed'; }
+      pendingChecks.delete(nonce);
+      if (why) break;
+      const s = rec.seen;
+      if (!s) why = 'request-not-seen';
+      else if (!auth.isTrustedPeer(s.peer, proxyTrust)) why = 'peer-not-trusted';
+      else if (s.values.length === 0) why = 'header-absent';
+      else if (s.values.length > 1) why = 'header-duplicated';
+      else if (String(s.values[0]).includes(',')) why = 'header-chained';
+      else if (!auth.normalizeIp(s.values[0])) why = 'header-invalid';
+      else if (auth.normalizeIp(s.values[0]) === forged) why = 'client-value-passed-through';
+      else if (!auth.isPublicAddr(s.values[0])) why = 'header-not-a-public-address';
+      else seenIps.push(auth.normalizeIp(s.values[0]));
+    }
+    if (!why && seenIps[0] !== seenIps[1]) why = 'value-not-stable';
+    const ok = !why, changed = ok !== proxyVerified || lastProxyWhy !== (why || 'ok');
+    proxyVerified = ok; lastProxyWhy = why || 'ok';
+    if (changed) info(ok ? 'Proxy header verification PASSED: ' + cfg.proxyHeader + ' is overwritten by the proxy (forged values did not pass through); per-client throttling and sign-in are enabled.'
+      : 'Proxy header verification NOT passed (' + why + '): ' + cfg.proxyHeader + ' is not trusted, so sign-in is refused. It is retried automatically. If the cause persists see DEPLOYMENT.md (or attest with PROXY_HEADER_VERIFIED=1 only after checking manually).');
+    return { ok, why: why || 'ok' };
+  }
+  function startProxyVerification(o) {                          // called once by the process that serves traffic (not by createApp, so tests have no timers)
+    if (!needsProxyProof) return { stop() {} };
+    o = Object.assign({ firstMs: 2000, retryMs: 10000, recheckMs: 30 * 60e3, send: null }, o); let stopped = false, t = null;
+    const tick = async () => { if (stopped) return; let r; try { r = await verifyProxy(o.send); } catch (e) { r = { ok: false }; } if (!stopped) t = setTimeout(tick, r.ok ? o.recheckMs : o.retryMs); if (t && t.unref) t.unref(); };
+    t = setTimeout(tick, o.firstMs); if (t.unref) t.unref();
+    return { stop() { stopped = true; clearTimeout(t); } };
+  }
   const isStorageError = e => e instanceof StorageError;
   const setTelegram = (mode, hook) => { tg.mode = mode; tg.hook = mode === 'webhook' ? hook : null; };   // hook = { secret, handle(update) -> 'ok'|'dup'|'bad'|'retry' }
-  return { S, server, runAs, snapshot, db, markUpdate, unmarkUpdate, isProcessed, isStorageError, setTelegram, flush, authConfig: cfg, isHealthy: () => healthy, getRev: () => rev, getEpoch: () => epoch,
+  return { S, server, runAs, snapshot, db, markUpdate, unmarkUpdate, isProcessed, isStorageError, setTelegram, flush, authConfig: cfg, verifyProxy, startProxyVerification, proxyState: () => ({ needed: needsProxyProof, verified: proxyVerified, why: lastProxyWhy }), isHealthy: () => healthy, getRev: () => rev, getEpoch: () => epoch,
     close: () => { for (const r of clients.keys()) { try { r.end(); } catch (e) {} } server.close(); if (db) db.close(); } };
 }
 
@@ -422,6 +478,8 @@ if (require.main === module) {
   app.server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? 'Port ' + PORT + ' is already in use (is another MyTurn server running?).' : 'Server error: ' + e.message); process.exit(1); });
   app.server.listen(PORT, HOST, () => {
     console.log('MyTurn server: http://' + HOST + ':' + PORT + '/  (website + shared queue API)');
+    if (app.proxyState().needed) { console.log('Client IP: ' + ac.proxyHeader + ' is NOT trusted until the proxy is verified (self-check through ' + (ac.publicOrigin ? new URL(ac.publicOrigin).host : 'PUBLIC_ORIGIN') + '); sign-in is refused until it passes. Check: /healthz shows "clientIp":"verified".'); if (ac.publicOrigin) app.startProxyVerification(); }
+    else if (ac.proxyAttested) console.warn('WARNING: PROXY_HEADER_VERIFIED=1 - the client-IP header is trusted on the operator\'s attestation, without the runtime self-check.');
     // Guard: another process (e.g. a plain static server on [::]:PORT) can answer "localhost" instead of this server,
     // so a browser opened at http://localhost:PORT would load the site WITHOUT the shared queue.
     if (!ac.production) fetch('http://localhost:' + PORT + '/api/state').then(r => r.json()).then(d => {

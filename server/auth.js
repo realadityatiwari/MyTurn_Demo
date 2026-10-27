@@ -133,6 +133,9 @@ function parseCidrs(list) {                                      // -> { list: n
 const DEFAULT_TRUST = parseCidrs(DEFAULT_TRUSTED_PEERS).list;
 const isTrustedPeer = (peer, trust) => { const ip = normalizeIp(peer); return !!ip && (trust || DEFAULT_TRUST).check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4'); };
 const isPrivateAddr = a => isTrustedPeer(a, DEFAULT_TRUST);
+// "Public" = a routable address a real client could have (not private, loopback, link-local, CGNAT, multicast, reserved).
+const NON_PUBLIC = parseCidrs([...DEFAULT_TRUSTED_PEERS, '0.0.0.0/8', '100.64.0.0/10', '169.254.0.0/16', '224.0.0.0/4', '240.0.0.0/4', 'fe80::/10', 'ff00::/8', '::/128']).list;
+const isPublicAddr = a => { const ip = normalizeIp(a); return !!ip && !NON_PUBLIC.check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4'); };
 /** @returns {{ip: string|null, trusted: boolean, reason: string}} reason: direct | proxy | peer-not-trusted | header-missing | header-invalid */
 function resolveClient({ peer, headers, proxyHeader, trust }) {
   const peerIp = normalizeIp(peer);
@@ -172,6 +175,9 @@ function authConfig(env) {
     allowReset: !production || env.ALLOW_PRODUCTION_RESET === '1',
     secureCookie: production || env.COOKIE_SECURE === '1',
     proxyHeader, warnings,
+    // cf-connecting-ip is NOT documented by Render, so by default it is only trusted after the app has proven at runtime (server.js
+    // verifyProxy) that the proxy overwrites a forged value. PROXY_HEADER_VERIFIED=1 is an explicit operator attestation that skips that proof.
+    proxyAttested: env.PROXY_HEADER_VERIFIED === '1',
     trustedProxyCidrs: env.TRUSTED_PROXY_CIDRS ? String(env.TRUSTED_PROXY_CIDRS).split(',').map(s => s.trim()).filter(Boolean) : null,   // null = default private/loopback ranges
     // requests per window; override in tests / for tuning
     rate: { ip: [300, 60e3], session: [120, 60e3], patientSession: [60, 60e3], destructive: [5, 60e3], signIn: [20, 600e3], login: [60, 60e3], sse: [10, 1e9], webhook: [600, 60e3], ipUnidentified: [3000, 60e3] } };
@@ -204,4 +210,4 @@ function productionErrors(cfg, env) {
   return errs;
 }
 
-module.exports = { hashPassword, verifyPassword, parseHash, parseCookies, cookie, Sessions, Throttle, RateLimiter, isPrivateAddr, isTrustedPeer, resolveClient, parseCidrs, normalizeIp, authConfig, productionErrors, validWebhookSecret, safeEqual, DEMO_PASSWORD };
+module.exports = { hashPassword, verifyPassword, parseHash, parseCookies, cookie, Sessions, Throttle, RateLimiter, isPrivateAddr, isPublicAddr, isTrustedPeer, resolveClient, parseCidrs, normalizeIp, authConfig, productionErrors, validWebhookSecret, safeEqual, DEMO_PASSWORD };

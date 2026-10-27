@@ -229,6 +229,12 @@ fly deploy --build-only
 ```
 Then continue with §6 step 5 (secrets) onward. Nothing in this runbook deploys by itself.
 
+## 6b. Render: client-IP proof (automatic) and the one manual check
+
+Render documents only `X-Forwarded-For` for client IPs; it does **not** document `CF-Connecting-IP`. So the app does not trust that header by default. On start it calls its own `PUBLIC_ORIGIN` twice through the real public path with two different forged `CF-Connecting-IP` values (documentation range `192.0.2.0/24`) and trusts the header only if both times the app received exactly one public IP, not the forged one, identical across the two probes, from a trusted proxy peer. Until it passes (normally within about a minute of a deploy, retried every 10 s) sign-in is refused with 503 and no per-client rate-limit bucket is used; the check repeats every 30 minutes and withdraws trust immediately if the platform stops overwriting the header.
+
+**The one manual check after deploying:** `curl.exe -s https://<service>.onrender.com/healthz` - wait until it shows `"clientIp":"verified"`, then sign in. If it stays `"unverified"`, the Render log says why (`Proxy header verification NOT passed (<reason>)`): `client-value-passed-through` means the header is client-controlled (do **not** attest); `header-absent` means Render does not send it; `peer-not-trusted` means the proxy peer is outside the private ranges (see `TRUSTED_PROXY_CIDRS`). Only after verifying by hand may you set `PROXY_HEADER_VERIFIED=1` to skip the check. Residual: other services in the same Render workspace can reach the app privately with arbitrary headers - run none, or narrow `TRUSTED_PROXY_CIDRS`.
+
 ## 7. Unresolved risks (honest list)
 
 - **Exactly one machine must exist.** `fly deploy` may create two machines for an app with an http service; with one volume only one can mount it. After the first deploy `fly status` must show **1** machine (`fly scale count 1` if not), never more.

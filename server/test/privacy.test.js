@@ -161,12 +161,60 @@ const flat = o => JSON.stringify(o);
     ok('without TRUST_PROXY_HEADER a spoofed X-Forwarded-For cannot dodge the lockout', cn[5] === 429, cn.join());
     ok('private-address check (header trusted only from a private/loopback proxy peer)', A.isPrivateAddr('127.0.0.1') && A.isPrivateAddr('::1') && A.isPrivateAddr('172.19.0.2') && A.isPrivateAddr('fdaa:0:1::3') && !A.isPrivateAddr('8.8.8.8') && !A.isPrivateAddr('172.32.0.1') && !A.isPrivateAddr('2001:db8::1'));
     px.close(); np.close();
-    let CP = '172.16.9.9'; const cfx = await mk({ auth: { proxyHeader: 'cf-connecting-ip' }, rest: { peerAddress: () => CP } });
+    let CP = '172.16.9.9'; const cfx = await mk({ auth: { proxyHeader: 'cf-connecting-ip', proxyAttested: true }, rest: { peerAddress: () => CP } });   // attested: header rules only (the proof gate is tested below)
     const viaCf = ip => new Client(cfx, ip ? { 'cf-connecting-ip': ip } : {});
     const cfOk = await viaCf('203.0.113.44').login('operator', OP_PW), cfNo = await viaCf(null).login('operator', OP_PW), cfChain = await viaCf('203.0.113.44, 6.6.6.6').login('operator', OP_PW);
     CP = '8.8.8.8'; const cfPub = await viaCf('203.0.113.45').login('operator', OP_PW);
     ok('Render cf-connecting-ip integration: a valid header from the proxy peer signs in; missing/chained headers and an untrusted peer are refused (503, fail closed)', cfOk.status === 200 && cfNo.status === 503 && cfChain.status === 503 && cfPub.status === 503, [cfOk.status, cfNo.status, cfChain.status, cfPub.status].join());
     cfx.close();
+
+    // ---------- Render: cf-connecting-ip is trusted only after the app has PROVEN the proxy overwrites it ----------
+    let PRX = '172.16.9.9'; const glogs = [], REAL = '203.0.113.200';
+    const gate = await mk({ auth: { proxyHeader: 'cf-connecting-ip' }, rest: { peerAddress: () => PRX, logInfo: m => glogs.push(m) } });
+    const simulate = (transform, skip) => async ({ path: p, headers }) => {                  // a simulated proxy in front of the app: rewrites the headers the app will see
+      if (skip) return; const h = transform(Object.assign({}, headers));
+      await new Promise((res, rej) => { const r = http.request({ host: '127.0.0.1', port: gate.port, path: p, headers: h, agent: false }, x => { x.resume(); x.on('end', res); }); r.on('error', rej); r.end(); });
+    };
+    const modes = { overwrite: simulate(h => Object.assign(h, { 'cf-connecting-ip': REAL })), passthrough: simulate(h => h), strip: simulate(h => { delete h['cf-connecting-ip']; return h; }),
+      chained: simulate(h => Object.assign(h, { 'cf-connecting-ip': REAL + ', 198.51.100.9' })), duplicated: simulate(h => Object.assign(h, { 'cf-connecting-ip': [h['cf-connecting-ip'], REAL] })),
+      malformed: simulate(h => Object.assign(h, { 'cf-connecting-ip': 'not-an-ip' })), privateAddr: simulate(h => Object.assign(h, { 'cf-connecting-ip': '10.0.0.5' })),
+      echoDerived: simulate(h => Object.assign(h, { 'cf-connecting-ip': '203.0.113.' + h['cf-connecting-ip'].split('.')[3] })),   // value derived from the client's: changes between the two probes
+      notSeen: simulate(h => h, true), failing: async () => { throw new Error('boom'); } };
+    const gx = (hdr) => new Client(gate, hdr ? { 'cf-connecting-ip': hdr } : {});
+    ok('proof gate: before any verification a valid header from the trusted peer is NOT enough: sign-in refused (503), /healthz says clientIp "unverified"', (await gx('203.0.113.1').login('operator', OP_PW)).status === 503 && JSON.parse((await gx().req('GET', '/healthz')).text).clientIp === 'unverified' && !gate.proxyState().verified);
+    const verdicts = {}; for (const m of Object.keys(modes)) verdicts[m] = (await gate.verifyProxy(modes[m])).why;
+    ok('proof gate: every unsafe proxy behaviour fails the proof with the right reason (pass-through, stripped, chained, duplicated, malformed, private, echo-derived, no request, request error)',
+      JSON.stringify(verdicts) === JSON.stringify({ overwrite: 'ok', passthrough: 'client-value-passed-through', strip: 'header-absent', chained: 'header-chained', duplicated: 'header-duplicated', malformed: 'header-invalid', privateAddr: 'header-not-a-public-address', echoDerived: 'value-not-stable', notSeen: 'request-not-seen', failing: 'self-request-failed' }), JSON.stringify(verdicts));
+    await gate.verifyProxy(modes.passthrough);
+    ok('proof gate: after a FAILED proof (client value passes through) sign-in stays refused even when the attacker supplies a "valid" header, and nothing is throttled per client', (await gx('203.0.113.1').login('operator', 'wrong')).status === 503 && (await gx('203.0.113.2').login('operator', OP_PW)).status === 503 && gate.proxyState().why === 'client-value-passed-through');
+    PRX = '8.8.8.8'; const wrongPeer = await gate.verifyProxy(modes.overwrite); PRX = '172.16.9.9';
+    ok('proof gate: the proof also fails when the TCP peer is not a trusted proxy', wrongPeer.why === 'peer-not-trusted' && !gate.proxyState().verified);
+    const goodProof = await gate.verifyProxy(modes.overwrite);
+    ok('proof gate: an overwriting proxy passes (two different forged values, identical single public result)', goodProof.ok && gate.proxyState().verified && JSON.parse((await gx().req('GET', '/healthz')).text).clientIp === 'verified' && glogs.some(l => /verification PASSED/.test(l)) && glogs.some(l => /NOT passed \(client-value-passed-through\)/.test(l)));
+    const v1 = await gx('203.0.113.11').login('operator', OP_PW);
+    ok('after the proof: sign-in works with a single valid header from the trusted peer', v1.status === 200);
+    const bad2 = [await gx(null).login('operator', 'x'), await gx('garbage').login('operator', 'x'), await gx('999.1.1.1').login('operator', 'x'), await gx('1.2.3.4, 5.6.7.8').login('operator', 'x'), await gx('203.0.113.12:80').login('operator', 'x')];
+    PRX = '8.8.8.8'; const bad3 = await gx('203.0.113.13').login('operator', OP_PW); PRX = '172.16.9.9';
+    ok('after the proof: missing, malformed, chained, port-suffixed headers and any header from an untrusted peer are still refused (503)', bad2.every(r => r.status === 503) && bad3.status === 503, bad2.map(r => r.status).join() + ' ' + bad3.status);
+    const iso = []; for (let i = 0; i < 6; i++) iso.push((await gx('198.51.100.70').login('operator', 'guess' + i)).status);
+    ok('rate-limit identity isolation after the proof: client A locked after 5 tries (429), client B and the account owner unaffected, the proxy address is never a bucket', iso.slice(0, 5).every(s => s === 401) && iso[5] === 429 && (await gx('198.51.100.71').login('operator', 'x')).status === 401 && (await gx('198.51.100.72').login('operator', OP_PW)).status === 200);
+    const flip = await gate.verifyProxy(modes.passthrough);
+    ok('re-verification: if the platform later stops overwriting the header, trust is withdrawn immediately (sign-in 503 again)', !flip.ok && (await gx('198.51.100.73').login('operator', OP_PW)).status === 503);
+    const nonce = crypto.randomBytes(24).toString('base64url'), pcs = [await gx().req('GET', '/__proxycheck/' + nonce), await gx().req('POST', '/__proxycheck/' + nonce, {}), await gx().req('GET', '/__proxycheck/short')];
+    ok('self-check endpoint answers only an unguessable pending nonce: any other request is a plain 404 and reveals nothing', pcs.every(r => r.status === 404 && !/cf-connecting|peer|203\.0/i.test(r.text)));
+    gate.close();
+    // automatic retries until the proof passes (as at deploy time, when the public route is not live yet), then the operator-visible state flips
+    const auto = await mk({ auth: { proxyHeader: 'cf-connecting-ip' } }); let tries = 0;
+    const flaky = async (req2) => { if (++tries <= 2) throw new Error('not routable yet'); return simulateTo(auto, req2); };
+    const simulateTo = (app2, { path: p, headers }) => new Promise((res, rej) => { const r = http.request({ host: '127.0.0.1', port: app2.port, path: p, headers: Object.assign({}, headers, { 'cf-connecting-ip': REAL }), agent: false }, x => { x.resume(); x.on('end', res); }); r.on('error', rej); r.end(); });
+    const handle = auto.startProxyVerification({ firstMs: 5, retryMs: 20, recheckMs: 600000, send: flaky }); const became = await until(() => auto.proxyState().verified, 4000); handle.stop();
+    ok('startup verification retries automatically after failures and then enables sign-in', became && tries >= 3 && auto.proxyState().why === 'ok');
+    auto.close();
+    const attApp = await mk({ auth: { proxyHeader: 'cf-connecting-ip', proxyAttested: true } });
+    ok('explicit operator attestation (PROXY_HEADER_VERIFIED=1) skips the proof; /healthz reports n/a; other proxy headers need no proof', !attApp.proxyState().needed && JSON.parse((await new Client(attApp).req('GET', '/healthz')).text).clientIp === 'n/a' && !(await mk({ auth: { proxyHeader: 'fly-client-ip' } }).then(a => { const n = a.proxyState().needed; a.close(); return n; })));
+    attApp.close();
+    ok('PROXY_HEADER_VERIFIED=1 is read from the environment only as the literal "1"', A.authConfig({ PROXY_HEADER_VERIFIED: '1' }).proxyAttested === true && A.authConfig({ PROXY_HEADER_VERIFIED: 'true' }).proxyAttested === false && A.authConfig({}).proxyAttested === false);
+    ok('isPublicAddr: routable addresses only (private, loopback, link-local, CGNAT, multicast are not)', A.isPublicAddr('203.0.113.200') && A.isPublicAddr('2001:db8::1') && ['10.0.0.1', '127.0.0.1', '169.254.1.1', '100.64.0.1', '224.0.0.1', '::1', 'fe80::1', 'fd00::1', 'nope'].every(a => !A.isPublicAddr(a)));
 
     // ---------- Task A: client identity, spoofing, missing IPs, lockout isolation ----------
     const R = A.resolveClient, T = peer => ({ peer, headers: { 'fly-client-ip': '203.0.113.5' }, proxyHeader: 'fly-client-ip' });
