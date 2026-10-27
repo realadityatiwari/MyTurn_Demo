@@ -3,6 +3,7 @@
   You run this yourself: it asks for the bot token with a hidden prompt, so the token is never typed into chat, a file, git or logs.
 
     powershell -File scripts\telegram-go-live.ps1              # set token+secret on the server, wait for health, register the webhook
+    powershell -File scripts\telegram-go-live.ps1 -Action check # ONLY ask Telegram whether the token is valid (getMe); changes nothing anywhere
     powershell -File scripts\telegram-go-live.ps1 -Action info # show what Telegram has registered (token still needed)
     powershell -File scripts\telegram-go-live.ps1 -Action delete   # roll back: remove the webhook (pending updates are kept)
     powershell -File scripts\telegram-go-live.ps1 -DryRun      # print the steps, change nothing, contact nothing
@@ -12,7 +13,7 @@
   here if missing (%USERPROFILE%\.myturn-secrets\telegram-webhook-secret.txt, owner-only) and set the same way.
 #>
 param(
-  [ValidateSet('set', 'info', 'delete')][string]$Action = 'set',
+  [ValidateSet('set', 'check', 'info', 'delete')][string]$Action = 'set',
   [string]$SshHost, [string]$App = 'myturn', [string]$PublicOrigin,
   [string]$SecretFile = (Join-Path $env:USERPROFILE '.myturn-secrets\telegram-webhook-secret.txt'),
   [switch]$DryRun
@@ -53,13 +54,24 @@ $secret = if ($DryRun -and -not (Test-Path -LiteralPath $SecretFile)) { 'x' * 43
 
 $env:MYTURN_SKIP_DOTENV = '1'                                   # never mix in an old local .env
 $env:TELEGRAM_BOT_TOKEN = $token; $env:TELEGRAM_WEBHOOK_SECRET = $secret; $env:PUBLIC_ORIGIN = $PublicOrigin
-$run = { param($a) Push-Location $root; try { node server/telegram-webhook.js $a } finally { Pop-Location } }
+$script:rc = 0
+$run = { param($a) Push-Location $root; try { node server/telegram-webhook.js $a; $script:rc = $LASTEXITCODE } finally { Pop-Location } }
+# telegram-webhook.js exit codes: 0 ok, 1 configuration, 2 network, 3 unexpected HTTP response, 4 Telegram answered ok:false (bad token = 401)
+function Explain([int]$code) {
+  switch ($code) {
+    2 { 'NETWORK problem reaching the Telegram API (see the "Network error" line above: DNS, connection, TLS or timeout). This says nothing about whether the token is valid. Nothing was changed.' }
+    3 { 'UNEXPECTED HTTP response (a redirect, non-JSON page or proxy/firewall answered instead of Telegram). Not proven to be a token problem. Nothing was changed.' }
+    4 { 'TELEGRAM answered ok:false (see the "Telegram error" line above; 401 Unauthorized = the token is wrong or revoked). Nothing was changed.' }
+    default { 'CONFIGURATION error (see the "Error" line above). Nothing was changed.' }
+  }
+}
 try {
-  if ($Action -eq 'info') { Step 'Telegram webhook status'; if (-not $DryRun) { & $run 'info' } else { Write-Host '(dry run) would run: node server/telegram-webhook.js info' }; return }
-  if ($Action -eq 'delete') { Step 'Removing the webhook (pending updates are kept)'; if (-not $DryRun) { & $run 'delete'; & $run 'info' } else { Write-Host '(dry run) would run: node server/telegram-webhook.js delete' }; return }
+  if ($Action -eq 'check') { Step 'Asking Telegram whether the token is valid (getMe; changes nothing)'; if (-not $DryRun) { & $run 'check'; if ($script:rc -ne 0) { throw (Explain $script:rc) } } else { Write-Host '(dry run) would run: node server/telegram-webhook.js check' }; return }
+  if ($Action -eq 'info') { Step 'Telegram webhook status'; if (-not $DryRun) { & $run 'info'; if ($script:rc -ne 0) { throw (Explain $script:rc) } } else { Write-Host '(dry run) would run: node server/telegram-webhook.js info' }; return }
+  if ($Action -eq 'delete') { Step 'Removing the webhook (pending updates are kept)'; if (-not $DryRun) { & $run 'delete'; if ($script:rc -ne 0) { throw (Explain $script:rc) }; & $run 'info' } else { Write-Host '(dry run) would run: node server/telegram-webhook.js delete' }; return }
 
-  Step 'Checking the token with Telegram (getWebhookInfo; nothing is changed yet)'
-  if (-not $DryRun) { & $run 'info'; if ($LASTEXITCODE -ne 0) { throw 'Telegram rejected the token. Nothing was changed on the server.' } } else { Write-Host '(dry run) would run: node server/telegram-webhook.js info' }
+  Step 'Asking Telegram whether the token is valid (getMe). The server is changed ONLY if Telegram explicitly confirms it.'
+  if (-not $DryRun) { & $run 'check'; if ($script:rc -ne 0) { throw (Explain $script:rc) } } else { Write-Host '(dry run) would run: node server/telegram-webhook.js check' }
 
   Step 'Setting TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET and TELEGRAM_MODE=webhook on the server through weeny env (app restarts)'
   if (-not $DryRun) {
@@ -78,7 +90,7 @@ try {
   } else { Write-Host '(dry run) would poll /healthz' }
 
   Step 'Registering the webhook (URL = <origin>/telegram/webhook, secret token, updates: message + callback_query)'
-  if (-not $DryRun) { & $run 'set'; if ($LASTEXITCODE -ne 0) { throw 'Registration failed.' }; & $run 'info' } else { Write-Host '(dry run) would run: node server/telegram-webhook.js set' }
+  if (-not $DryRun) { & $run 'set'; if ($script:rc -ne 0) { throw ('Registration failed. ' + (Explain $script:rc)) }; & $run 'info' } else { Write-Host '(dry run) would run: node server/telegram-webhook.js set' }
   Write-Host "`nDone. Now send /start to your bot from a TEST Telegram account (not a real patient), then /register and /status." -ForegroundColor Green
 }
 finally { $token = $null; $secret = $null; $env:TELEGRAM_BOT_TOKEN = $null; $env:TELEGRAM_WEBHOOK_SECRET = $null; $env:PUBLIC_ORIGIN = $null; $env:MYTURN_SKIP_DOTENV = $null }

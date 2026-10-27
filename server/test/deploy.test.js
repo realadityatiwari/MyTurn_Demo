@@ -175,6 +175,13 @@ const get = (port, p, host) => hreq(port, 'GET', p, host ? { Host: host } : {});
     ok('no bot token, webhook secret or password hash appears in process output, health, error or auth responses (bot start failure path included)', !all.includes(LEAK_TOKEN) && !all.includes(LEAK_SECRET) && !all.includes(hash) && /could not start/.test(sl.err + sl.out), all.slice(0, 300));
     await sl.kill();
 
+    // go-live script fail-safe ordering (the hidden token prompt cannot be automated, so the gating is asserted on the script itself)
+    const gl = fs.readFileSync(path.join(ROOT, 'scripts', 'telegram-go-live.ps1'), 'utf8');
+    const iCheck = gl.indexOf("& $run 'check'; if ($script:rc -ne 0) { throw (Explain $script:rc) }", gl.indexOf('The server is changed ONLY if Telegram explicitly confirms it')), iEnv = gl.indexOf('weeny env $App'), iSet = gl.indexOf("& $run 'set'");
+    ok('go-live script: the token is set on the server / webhook registered ONLY after `check` exits 0 (a failed check throws first); every failure class has its own explanation', iCheck > 0 && iCheck < iEnv && iEnv < iSet && /2 \{ 'NETWORK problem/.test(gl) && /3 \{ 'UNEXPECTED HTTP/.test(gl) && /4 \{ 'TELEGRAM answered ok:false/.test(gl) && !/Telegram rejected the token/.test(gl) && /MYTURN_SKIP_DOTENV/.test(gl));
+    ok('go-live script: -Action check exists and changes nothing (no weeny env / ssh in that branch)', /\[ValidateSet\('set', 'check', 'info', 'delete'\)\]/.test(gl) && (() => { const b = gl.slice(gl.indexOf("if ($Action -eq 'check')"), gl.indexOf("if ($Action -eq 'info')")); return b.length > 0 && !/weeny env|ssh /.test(b); })());
+    ok('telegram-webhook CLI honours MYTURN_SKIP_DOTENV (an old .env cannot change what is contacted)', /MYTURN_SKIP_DOTENV !== '1'\) loadEnv/.test(fs.readFileSync(path.join(ROOT, 'server', 'telegram-webhook.js'), 'utf8')));
+
     // ================= hosting configuration consistency =================
     const fly = fs.readFileSync(path.join(ROOT, 'fly.toml'), 'utf8'), docker = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8'), dign = fs.readFileSync(path.join(ROOT, '.dockerignore'), 'utf8'), gign = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
     const envBlock = (fly.match(/\[env\]([\s\S]*?)(?=\n\[)/) || [, ''])[1], flyEnv = {}; for (const m of envBlock.matchAll(/^\s*([A-Z_]+)\s*=\s*"([^"]*)"/gm)) flyEnv[m[1]] = m[2];

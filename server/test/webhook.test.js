@@ -260,6 +260,57 @@ const rows = (app, id) => app.S.get().q['rv:gm'].filter(e => e.acct === 'tg:' + 
       await cli.run('set', { TELEGRAM_WEBHOOK_SECRET: SECRET, PUBLIC_ORIGIN: 'https://a.example' }, { log: m => l2.push(m), apiBase: api0 }), await cli.run('bogus', env, { log: m => l2.push(m), apiBase: api0 })];
     ok('CLI refuses weak secret, non-https origin, missing token and unknown commands (exit 1, nothing sent)', bads.every(c => c === 1) && calls.filter(c => c.method === 'setWebhook').length === 1);
 
+    // ---------- token verification diagnostics (regression: a network failure was reported as "Telegram rejected the token") ----------
+    const behave = { mode: 'ok' }, seenPaths = [];
+    const diag = http.createServer((req, rs) => {
+      let b = ''; req.on('data', c => b += c); req.on('end', () => {
+        seenPaths.push(req.url.replace(TOKEN, '<token>'));
+        const send = (st, body, type, hdr) => { rs.writeHead(st, Object.assign({ 'Content-Type': type || 'application/json' }, hdr || {})); rs.end(body); };
+        switch (behave.mode) {
+          case 'ok': return send(200, JSON.stringify({ ok: true, result: { id: 1, is_bot: true, username: 'my_test_bot' } }));
+          case 'invalid': return send(401, JSON.stringify({ ok: false, error_code: 401, description: 'Unauthorized' }));
+          case 'invalid-echo': return send(400, JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: url ' + TOKEN }));
+          case 'ok-no-bot': return send(200, JSON.stringify({ ok: true, result: { id: 1 } }));
+          case 'ok-false-200': return send(200, JSON.stringify({ ok: false, error_code: 429, description: 'Too Many Requests' }));
+          case 'html-200': return send(200, '<html>captive portal</html>', 'text/html');
+          case 'bad-gateway': return send(502, '<html>502 Bad Gateway</html>', 'text/html');
+          case 'redirect': return send(302, '', 'text/plain', { Location: 'https://example.invalid/' });
+          case 'json-no-ok': return send(200, JSON.stringify({ hello: 'world' }));
+          case 'ok-but-500': return send(500, JSON.stringify({ ok: true, result: true }));
+          case 'hang': return;                                           // never answers
+        }
+      });
+    });
+    await new Promise(r => diag.listen(0, '127.0.0.1', r)); const dBase = 'http://127.0.0.1:' + diag.address().port;
+    const tokEnv = { TELEGRAM_BOT_TOKEN: TOKEN, TELEGRAM_WEBHOOK_SECRET: SECRET, PUBLIC_ORIGIN: 'https://myturn.example' };
+    const chk = async (mode, o) => { behave.mode = mode; seenPaths.length = 0; const out = []; const code = await cli.run('check', tokEnv, Object.assign({ log: m => out.push(m), apiBase: dBase }, o)); return { code, text: out.join('\n'), paths: seenPaths.slice() }; };
+    const g1 = await chk('ok');
+    ok('token check: Telegram confirms (ok:true + bot identity) -> exit 0, only getMe is called, the bot username (public) is shown', g1.code === cli.EXIT.OK && /@my_test_bot/.test(g1.text) && g1.paths.length === 1 && /\/getMe$/.test(g1.paths[0]));
+    const g2 = await chk('invalid');
+    ok('token check: explicit ok:false 401 -> exit 4 and a message that says the token is invalid (NOT a network problem)', g2.code === cli.EXIT.TELEGRAM && /Telegram error: Telegram says the token is invalid \(401 Unauthorized\)/.test(g2.text) && !/Network error/.test(g2.text));
+    const g3 = await chk('invalid-echo');
+    ok('token check: a token echoed back by Telegram in the error text is redacted', g3.code === cli.EXIT.TELEGRAM && !g3.text.includes(TOKEN) && /<token>/.test(g3.text));
+    const g4 = await chk('html-200'), g5 = await chk('bad-gateway'), g6 = await chk('redirect'), g7 = await chk('json-no-ok'), g8 = await chk('ok-but-500'), g9 = await chk('ok-no-bot');
+    ok('token check: HTTP-level problems (200 with HTML, 502, redirect, JSON without "ok", ok:true with a 500, ok without a bot identity) -> exit 3, each explained, never "invalid token"',
+      [g4, g5, g6, g7, g8, g9].every(g => g.code === cli.EXIT.HTTP && /^HTTP error: /m.test(g.text) && !/token is invalid/.test(g.text)) && /non-JSON/.test(g4.text) && /HTTP 502/.test(g5.text) && /redirect \(not followed\)/.test(g6.text) && /without a bot identity/.test(g9.text), [g4, g5, g6, g7, g8, g9].map(g => g.code).join());
+    const ga = await chk('ok-false-200');
+    ok('token check: ok:false with another error code is a Telegram answer (exit 4) that shows the code, not a "bad token" claim', ga.code === 4 && /429/.test(ga.text) && !/token is invalid/.test(ga.text));
+    const gh = await chk('hang', { timeoutMs: 300 });
+    ok('token check: a server that never answers -> timeout reported as a NETWORK problem (exit 2)', gh.code === cli.EXIT.NETWORK && /Network error: timeout/.test(gh.text));
+    const dead = http.createServer(); await new Promise(r => dead.listen(0, '127.0.0.1', r)); const deadBase = 'http://127.0.0.1:' + dead.address().port; await new Promise(r => dead.close(r));
+    behave.mode = 'ok'; const out2 = []; const gn = await cli.run('check', tokEnv, { log: m => out2.push(m), apiBase: deadBase });
+    ok('token check: connection refused -> exit 2 and the REAL cause (ECONNREFUSED) is shown instead of just "fetch failed"; no URL, no token', gn === cli.EXIT.NETWORK && /Network error: connection failed \(ECONNREFUSED\)/.test(out2.join('\n')) && !out2.join('\n').includes(TOKEN) && !/\/bot/.test(out2.join('\n')));
+    const mk2 = (code, cause) => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(cause || 'x'), { code }) });
+    ok('describeNetworkError classifies DNS, connection, TLS and timeout causes', [['ENOTFOUND', /DNS lookup failed \(ENOTFOUND\)/], ['EAI_AGAIN', /DNS lookup failed/], ['ETIMEDOUT', /connection failed/], ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', /TLS\/certificate/], ['CERT_HAS_EXPIRED', /TLS\/certificate/], ['UND_ERR_CONNECT_TIMEOUT', /timeout/]].every(([c, re]) => re.test(cli.describeNetworkError(mk2(c)))) && /^timeout/.test(cli.describeNetworkError(Object.assign(new Error('x'), { name: 'AbortError' }))) && !/fetch failed$/.test(cli.describeNetworkError(mk2('ENOTFOUND', 'getaddrinfo ENOTFOUND api.telegram.org'))));
+    const warnOut = []; const gRefuse = await cli.run('check', Object.assign({ TELEGRAM_API_BASE: 'https://evil.example' }, tokEnv), { log: m => warnOut.push(m) });
+    ok('a TELEGRAM_API_BASE override (e.g. from an old .env) is REFUSED for real use, so the token is never sent to another host; the host name is shown', gRefuse === cli.EXIT.CONFIG && /evil\.example/.test(warnOut.join('\n')) && /instead of api\.telegram\.org/.test(warnOut.join('\n')) && !warnOut.join('\n').includes(TOKEN));
+    const okOut = []; await cli.run('check', Object.assign({ TELEGRAM_API_BASE: dBase, ALLOW_CUSTOM_TELEGRAM_API: '1' }, tokEnv), { log: m => okOut.push(m) });
+    ok('...unless explicitly allowed for a local test server (and then it says so)', /non-default Telegram API host/.test(okOut.join('\n')) && /Token accepted/.test(okOut.join('\n')));
+    ok('every run says which API host it contacts (host only, never the path that contains the token)', /Contacting Telegram API host: 127\.0\.0\.1:\d+/.test(g1.text) && !g1.text.includes(TOKEN));
+    const gset = await (async () => { behave.mode = 'invalid'; const o = []; const code = await cli.run('set', tokEnv, { log: m => o.push(m), apiBase: dBase }); return { code, text: o.join('\n') }; })();
+    ok('set/info/delete use the same diagnostics (a 401 on setWebhook is exit 4 with the same explanation)', gset.code === 4 && /token is invalid/.test(gset.text));
+    diag.close();
+
     // ---------- logging hygiene ----------
     const dump = logged.join('\n');
     ok('nothing logged anywhere contains the bot token, the webhook secret, phone numbers or update payload text', !dump.includes(TOKEN) && !dump.includes(SECRET) && !/9000000\d{3}|SENSITIVE/.test(dump) && !/"update_id"|"callback_query"/.test(dump), dump.slice(0, 200));
