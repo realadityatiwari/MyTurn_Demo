@@ -1,7 +1,6 @@
-# MyTurn – deployment runbook (Phase 4B: prepared, NOT deployed)
+# MyTurn – deployment runbook
 
-Status: configuration and tooling are prepared and tested locally. Nothing has been deployed, no webhook has been registered, no hosting
-account was used, and no production secret was requested or printed. **This document is not a claim of production readiness.**
+**Current deployment: weeny.cloud - see [DEPLOYMENT-WEENY.md](DEPLOYMENT-WEENY.md)** (live URL, environment variables, backups/restore, Telegram, credential rotation, limitations). The sections below describe the general design and the Render/Fly.io alternatives, which were prepared but not deployed. **This document is not a claim of production readiness.**
 Legend: **[auto]** verified by automated tests in this repository · **[manual]** needs your accounts / public HTTPS · **[unverified]** written but not run.
 
 ## Render target (prepared, NOT deployed)
