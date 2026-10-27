@@ -18,6 +18,7 @@
   let walkOpen = true;
   function script() {
     const st = S.get(), acts = ACT[st.scenario];
+    if (!acts) return '';        // a scenario without a scripted demo (production starts as 'empty'): no walkthrough, but the rest of the page must still initialise
     let h = '<details class="walk"' + (walkOpen ? ' open' : '') + '><summary><span>' + esc(t('scen.' + st.scenario)) + ' · ' + esc(t('script.title')) + '</span><i aria-hidden="true"></i></summary><ol>';
     acts.forEach((a, i) => { h += '<li><span class="actor a-' + a + '">' + esc(t('actor.' + a)) + '</span><span class="txt">' + esc(t('script.' + st.scenario + '.' + (i + 1))) + '</span></li>'; });
     return h + '</ol><p class="creds">' + esc(t('script.creds')) + '</p></details>';
