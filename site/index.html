@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyTurn — Know what happens next</title>
+<meta name="description" content="MyTurn helps patients follow their turn at a clinic while staff run one shared queue. Interactive prototype.">
+<meta name="theme-color" content="#0F3D2E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='26' fill='%230F3D2E'/%3E%3Cpath d='M36 84 V54 a14 14 0 0 1 28 0 V84 M64 54 a14 14 0 0 1 28 0 V66' fill='none' stroke='%23F7F3E9' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='92' cy='84' r='9' fill='%23E8A33D'/%3E%3C/svg%3E">
+<script>document.documentElement.classList.add('js');</script>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<a class="skip" href="#demo" data-t="skip">Skip to demo</a>
+<header class="site-head">
+  <div class="wrap bar">
+    <span id="wm" class="wm-slot" aria-label="MyTurn"></span>
+    <nav class="links" aria-label="Page sections">
+      <a href="#problem" data-t="nav.problem">The problem</a>
+      <a href="#how" data-t="nav.how">How it works</a>
+      <a href="#benefits" data-t="nav.benefits">Benefits</a>
+    </nav>
+    <a class="btn small nav-cta" href="#demo" data-t="nav.cta">Live demo</a>
+    <div id="site-lang"></div>
+  </div>
+</header>
+
+<main>
+  <!-- 1. Hero -->
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <p class="mono" data-t="hero.eyebrow">Interactive prototype · illustrative data</p>
+        <h1 id="hero-title"><span data-t="hero.h1a">Your turn.</span> <span data-t="hero.h1b">Without the uncertainty.</span></h1>
+        <p class="hero-sub" data-t="hero.sub">MyTurn shows patients where they stand in a clinic visit, from registration to being called, while staff run one shared queue.</p>
+        <div class="cta-row">
+          <a class="btn big amber-btn" href="#demo" data-t="hero.cta1">Explore the live demo</a>
+          <a class="btn big outline-light" href="#how" data-t="hero.cta2">How it works</a>
+        </div>
+      </div>
+      <div class="hero-art">
+        <div id="hero-viz" class="hero-viz" aria-hidden="true"></div>
+        <div class="hero-ctl"><button type="button" id="hv-btn" class="btn small outline-light" aria-pressed="false"></button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Problem -->
+  <section id="problem" class="sec" aria-labelledby="problem-h">
+    <div class="wrap sec-grid">
+      <p class="mono sec-label" data-t="problem.label">The problem</p>
+      <div>
+        <h2 id="problem-h" data-t="problem.h">Waiting is manageable. Not knowing is the hard part.</h2>
+        <ul class="rows">
+          <li><b data-t="problem.1h">Patients</b><span data-t="problem.1">can't tell whether they are registered, checked in, or actually in the line.</span></li>
+          <li><b data-t="problem.2h">Front desks</b><span data-t="problem.2">often track arrivals, calls and late returns by hand, in several places.</span></li>
+          <li><b data-t="problem.3h">Missed turns</b><span data-t="problem.3">leave everyone unsure what happens next, and what the clinic has promised.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. How it works -->
+  <section id="how" class="sec sec-alt" aria-labelledby="how-h">
+    <div class="wrap sec-grid">
+      <p class="mono sec-label" data-t="how.label">How it works</p>
+      <div>
+        <h2 id="how-h" data-t="how.h">One shared queue. Two views.</h2>
+        <p class="sec-lead" data-t="how.lead">Patients follow their visit on their own phone. Clinic staff run the queue at the desk. Every action on either side updates the other.</p>
+        <ol class="route">
+          <li><h3 data-t="s1.h">Register</h3><p data-t="s1.p">Choose a clinic and session, pick who the visit is for, and receive a token.</p></li>
+          <li><h3 data-t="s2.h">Check in</h3><p data-t="s2.p">Check in on arrival. Registering alone never puts anyone in the waiting line.</p></li>
+          <li><h3 data-t="s3.h">Follow your turn</h3><p data-t="s3.p">See your status and who is ahead, only when it can be shown reliably.</p></li>
+          <li><h3 data-t="s4.h">Be called</h3><p data-t="s4.p">Staff call the next patient, start service and complete it, one patient at a time.</p></li>
+        </ol>
+        <p class="aside-note"><b data-t="how.missH">Missed your turn?</b> <span data-t="how.miss">Request to return. Staff decide under clinic policy, and the original place is never promised.</span></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Benefits -->
+  <section id="benefits" class="sec" aria-labelledby="ben-h">
+    <div class="wrap sec-grid">
+      <p class="mono sec-label" data-t="ben.label">Benefits</p>
+      <div>
+        <h2 id="ben-h" data-t="ben.h">Clear for the person waiting. Calm for the person running the desk.</h2>
+        <div class="ben-cols">
+          <div>
+            <h3 data-t="ben.pH">For patients</h3>
+            <ul class="rows tight">
+              <li data-t="ben.p1">A clear status at every step, in English or हिन्दी.</li>
+              <li data-t="ben.p2">One account for up to 7 family members.</li>
+              <li data-t="ben.p3">Honest information: no invented wait times.</li>
+            </ul>
+          </div>
+          <div>
+            <h3 data-t="ben.sH">For clinic staff</h3>
+            <ul class="rows tight">
+              <li data-t="ben.s1">One queue that links registration, check-in and the desk.</li>
+              <li data-t="ben.s2">Roles: operators run the queue, administrators handle overrides and resets.</li>
+              <li data-t="ben.s3">Patients appear as first name and last initial only.</li>
+            </ul>
+          </div>
+        </div>
+        <a class="btn big forest ben-cta" href="#demo" data-t="hero.cta1">Explore the live demo</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Live demo -->
+  <section id="demo" class="stage" aria-labelledby="demo-h" tabindex="-1">
+    <div class="wrap">
+      <div class="stage-head">
+        <div>
+          <p class="mono light" data-t="demo.eyebrow">Interactive prototype</p>
+          <h2 id="demo-h" data-t="demo.h">Try the live demo</h2>
+        </div>
+        <p class="stage-lead" data-t="demo.lead">Use both phones together: every action on one appears on the other instantly.</p>
+      </div>
+      <div id="ctl" class="controls" role="group" aria-label="Scenario controls"></div>
+      <p id="step-msg" class="step-msg" role="status" aria-live="polite"></p>
+      <div class="demo-grid">
+        <div class="frames" id="frames">
+          <figure class="frame-col">
+            <div class="dev"><div class="phone"><div id="pf" class="screen"></div></div></div>
+            <figcaption><b data-t="cap.patient">Patient</b> <span data-t="cap.patientSub">app on the patient's phone</span></figcaption>
+          </figure>
+          <figure class="frame-col" id="staff-col">
+            <div class="dev"><div class="phone"><div id="sf" class="screen"></div></div></div>
+            <figcaption><b data-t="cap.staff">Staff</b> <span data-t="cap.staffSub">reception / queue operator</span></figcaption>
+          </figure>
+        </div>
+        <aside class="demo-aside" aria-label="Demo walkthrough"><div id="script" class="script"></div></aside>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap foot-grid">
+    <div class="foot-brand">
+      <span id="wm2" class="wordmark foot-wm" aria-label="MyTurn"></span>
+      <p data-t="foot.brand">Know what happens next.</p>
+    </div>
+    <div>
+      <h3 data-t="foot.aboutH">About this prototype</h3>
+      <p data-t="disc.p">MyTurn is an interactive prototype.</p>
+    </div>
+    <div>
+      <h3 data-t="foot.notesH">Brand and language</h3>
+      <p data-t="foot.notes">Fonts, colours and the logo follow the MyTurn Master Brand Board.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="js/i18n.js"></script>
+<script src="js/store.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/patient.js"></script>
+<script src="js/staff.js"></script>
+<script src="js/app.js"></script>
+<script src="js/hero.js"></script>
+</body>
+</html>

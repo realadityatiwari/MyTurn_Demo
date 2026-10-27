@@ -1,0 +1,43 @@
+# Fly.io configuration for MyTurn - ONE machine + ONE persistent volume. Not validated or deployed (no fly CLI / account was used).
+# Before first use: replace REPLACE-WITH-YOUR-APP-NAME, run `fly config validate`, then follow DEPLOYMENT.md.
+# Secrets are NOT in this file. Set them with `fly secrets set` (see DEPLOYMENT.md): STAFF_*_PASSWORD_HASH, PUBLIC_ORIGIN,
+# TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET.
+app = "REPLACE-WITH-YOUR-APP-NAME"
+primary_region = "REPLACE-WITH-YOUR-REGION"   # the volume lives in one region; pick the one closest to the clinic
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]                                                # non-secret settings only
+  NODE_ENV = "production"
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  DATABASE_PATH = "/data/myturn.db"
+  SEED_MODE = "empty"
+  TRUST_PROXY_HEADER = "fly-client-ip"               # trusted only from Fly's private proxy address (see auth.js clientIp)
+  TELEGRAM_MODE = "webhook"
+
+[[mounts]]
+  source = "myturn_data"                             # create with: fly volumes create myturn_data --size 1 --region <region> --count 1
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"                         # the queue must always be reachable; Telegram retries are not a substitute
+  auto_start_machines = false
+  min_machines_running = 1                           # exactly one instance: SQLite has a single writer, sessions/rate limits are in memory
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"                                # 200 only when the database is readable/writable; exempt from the Host check
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+
+[deploy]
+  strategy = "immediate"                             # replace the single machine in place (brief downtime); never run two machines on one volume
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
