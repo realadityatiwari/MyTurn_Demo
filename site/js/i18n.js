@@ -223,7 +223,33 @@
     'log.call': ['{who} called', '{who} ने बुलाया'], 'log.start': ['{who} started service', '{who} ने सेवा शुरू की'], 'log.done': ['{who} completed', '{who} ने पूर्ण किया'],
     'log.missed': ['{who} marked missed', '{who} ने छूटा दर्ज किया'], 'log.arrived': ['{who} recorded arrival', '{who} ने आगमन दर्ज किया'], 'log.noshow': ['{who} marked no-show', '{who} ने नहीं आया दर्ज किया'],
     'log.accept': ['{who} accepted return', '{who} ने वापसी स्वीकार की'], 'log.override': ['{who} override-accepted', '{who} ने ओवरराइड कर स्वीकार किया'], 'log.decline': ['{who} declined return', '{who} ने वापसी अस्वीकार की'],
-    'log.cancel': ['{who} cancelled', '{who} ने रद्द किया'], 'log.reset': ['{who} reset the queue', '{who} ने कतार रीसेट की']
+    'log.cancel': ['{who} cancelled', '{who} ने रद्द किया'], 'log.reset': ['{who} reset the queue', '{who} ने कतार रीसेट की'], 'log.assist': ['{who} registered a walk-in', '{who} ने वॉक-इन पंजीकृत किया'],
+    /* ---- walk-in (assisted) registration and the paper receipt ---- */
+    'wk.open': ['Register walk-in', 'वॉक-इन पंजीकृत करें'], 'wk.title': ['Register a walk-in patient', 'वॉक-इन मरीज़ पंजीकृत करें'],
+    'wk.name': ['Patient name', 'मरीज़ का नाम'],
+    'wk.hint': ['Up to 40 characters. The patient joins the waiting queue now and gets a paper slip.', 'अधिकतम 40 अक्षर। मरीज़ अभी प्रतीक्षा कतार में जुड़ेगा और उसे कागज़ की पर्ची मिलेगी।'],
+    'wk.submit': ['Register and get token', 'पंजीकृत करें और टोकन लें'], 'wk.busy': ['Registering…', 'पंजीकरण हो रहा है…'], 'wk.cancel': ['Cancel', 'रद्द करें'],
+    'wk.errEmpty': ["Enter the patient's name.", 'मरीज़ का नाम लिखें।'], 'wk.errLong': ['The name is too long (40 characters at most).', 'नाम बहुत लंबा है (अधिकतम 40 अक्षर)।'],
+    'wk.errChars': ['The name contains characters that are not allowed.', 'नाम में अमान्य अक्षर हैं।'],
+    'wk.errClosed': ['This service is not open for registration.', 'यह सेवा अभी पंजीकरण के लिए खुली नहीं है।'],
+    'wk.errForbidden': ['You cannot register patients for this service.', 'आप इस सेवा के लिए मरीज़ पंजीकृत नहीं कर सकते।'],
+    'wk.errAuth': ['Your session has ended. Sign in again.', 'आपका सत्र समाप्त हो गया है। फिर से साइन इन करें।'],
+    'wk.errBusy': ['Too many requests. Wait a moment and try again.', 'बहुत अधिक अनुरोध। थोड़ी देर रुककर फिर कोशिश करें।'],
+    'wk.errGeneric': ['Could not register. Nothing was created. Please try again.', 'पंजीकरण नहीं हो सका। कुछ भी नहीं बना। कृपया फिर कोशिश करें।'],
+    'wk.dupT': ['Possible duplicate', 'संभावित दोहराव'],
+    'wk.dupB': ['A patient with the same name is already in this queue (below). It may be a different person with the same name. Register again only if this is a different patient.', 'इस कतार में इसी नाम का एक मरीज़ पहले से है (नीचे)। यह इसी नाम का कोई दूसरा व्यक्ति हो सकता है। केवल तभी दोबारा पंजीकृत करें जब यह दूसरा मरीज़ हो।'],
+    'wk.dupGo': ['Register anyway', 'फिर भी पंजीकृत करें'],
+    'wk.unT': ['Could not confirm the registration', 'पंजीकरण की पुष्टि नहीं हो सकी'],
+    'wk.unB': ['The connection failed before an answer arrived, so the patient may already be registered. Retrying is safe: it cannot create a second token. Do not hand over a slip until it is confirmed.', 'उत्तर आने से पहले कनेक्शन टूट गया, इसलिए मरीज़ पहले से पंजीकृत हो सकता है। दोबारा कोशिश सुरक्षित है: इससे दूसरा टोकन नहीं बनेगा। पुष्टि होने तक पर्ची न दें।'],
+    'wk.retry': ['Retry safely', 'सुरक्षित रूप से फिर कोशिश करें'], 'wk.checkQueue': ['Check the Waiting list before registering again.', 'दोबारा पंजीकृत करने से पहले प्रतीक्षा सूची देखें।'],
+    'wk.okT': ['Registered', 'पंजीकृत'], 'wk.okB': ['Added to the waiting queue.', 'प्रतीक्षा कतार में जोड़ा गया।'],
+    'wk.replayed': ['This registration was already completed. Showing the existing token; no new token was created.', 'यह पंजीकरण पहले ही हो चुका है। मौजूदा टोकन दिखाया जा रहा है; कोई नया टोकन नहीं बना।'],
+    'wk.print': ['Print receipt', 'रसीद प्रिंट करें'], 'wk.done': ['Done', 'हो गया'],
+    'wk.reprintT': ['Receipt', 'रसीद'], 'wk.reprintB': ['Reprint of an existing registration. No new token is created.', 'मौजूदा पंजीकरण की दोबारा रसीद। कोई नया टोकन नहीं बनता।'],
+    'a.reprint': ['Reprint', 'दोबारा प्रिंट'],
+    'rc.token': ['Your token', 'आपका टोकन'], 'rc.patient': ['Patient', 'मरीज़'], 'rc.when': ['Registered', 'पंजीकरण'], 'rc.timeNA': ['Time not available', 'समय उपलब्ध नहीं'],
+    'rc.s1': ['Keep this slip with you.', 'इस पर्ची को अपने पास रखें।'], 'rc.s2': ['Wait to be called by your token number.', 'अपना टोकन नंबर बुलाए जाने की प्रतीक्षा करें।'],
+    'rc.s3': ['If you miss your turn, ask reception.', 'अपनी बारी छूट जाए तो रिसेप्शन से पूछें।']
   };
   /* ---- visual-fidelity pass: strings added or reworded to match the approved prototype ---- */
   Object.assign(D, {

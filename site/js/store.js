@@ -88,6 +88,10 @@
   const busy = list => list.some(x => x.st === 'called' || x.st === 'svc');
   const moveToEnd = (list, e) => { list.splice(list.indexOf(e), 1); list.push(e); };
   const myPhone = () => state.patient.phone;
+  const MAX_NAME = 40, IDEM_MS = 12 * 3600e3, RID_RE = /^[A-Za-z0-9_-]{16,64}$/;   // IDEM_MS: how long a request id stays "remembered" (longer than a staff session, 8 h)
+  const normName = s => String(s == null ? '' : s).normalize('NFKC').replace(/\s+/g, ' ').trim();
+  const nameKey = s => normName(s).toLowerCase();
+  const simulated = e => !e.acct && e.src !== 'staff';          // seed/demo patients without an account may be advanced by tick(); real walk-ins never
   const staffName = () => state.staff.role === 'admin' ? 'admin' : 'operator';
 
   const S = {
@@ -128,9 +132,9 @@
         const list = state.q[key];
         const svc = list.find(x => x.st === 'svc'), called = list.find(x => x.st === 'called');
         let e = null, to = null;
-        if (svc && !svc.acct) { e = svc; to = 'done'; }
-        else if (called && !called.acct) { e = called; to = 'svc'; }
-        else if (!svc && !called) { const w = list.find(x => x.st === 'wait'); if (w && !w.acct) { e = w; to = 'called'; } }
+        if (svc && simulated(svc)) { e = svc; to = 'done'; }
+        else if (called && simulated(called)) { e = called; to = 'svc'; }
+        else if (!svc && !called) { const w = list.find(x => x.st === 'wait'); if (w && simulated(w)) { e = w; to = 'called'; } }
         if (e) { e.st = to; changed = true; }
       }
       if (changed) commit();
@@ -244,6 +248,31 @@
       else return err('state');
       log(staffName(), 'arrived', r.e); commit(); return ok();
     },
+    /* Walk-in registration by staff for a patient who is physically present and has no phone/Telegram.
+       The patient joins the WAITING queue directly (= register + markArrived in one step), at the end, with the next token of the session.
+       rid = a client-generated request id: retrying the same request returns the SAME entry instead of creating another (see IDEM_MS).
+       confirm = true after the staff member has seen a probable-duplicate warning and chose to go ahead. */
+    registerAssisted(key, name, rid, confirm) {
+      if (S._staff()) return err('auth');
+      const info = typeof key === 'string' ? findSession(key) : null;
+      if (!info || info.session.st !== 'open') return err('closed');
+      if (state.staff.role === 'op' && info.clinic.id !== 'rv') return err('forbidden');
+      const nm = normName(name);
+      if (!nm || nm.length > MAX_NAME || /[\u0000-\u001f\u007f-\u009f]/.test(nm)) return err('name');
+      if (typeof rid !== 'string' || !RID_RE.test(rid)) return err('rid');
+      const now = Date.now();
+      for (const k in state.q) {                                         // retry of an earlier request: same entry, nothing new is created
+        const prev = state.q[k].find(x => x.rid === rid && now - x.at <= IDEM_MS);
+        if (prev) return k === key && nameKey(prev.name) === nameKey(nm) ? { ok: true, e: prev, key: k, replayed: true } : err('idem');
+      }
+      if (confirm !== true) {
+        const dup = entries(key).filter(x => ACTIVE.includes(x.st) && nameKey(x.name) === nameKey(nm));
+        if (dup.length) return { err: 'dupWarn', dup: dup.map(x => ({ id: x.id, tok: x.tok, st: x.st })) };
+      }
+      const n = state.ctr[key]++;
+      const e = { id: key + '#' + n, tok: info.session.tok + ' ' + pad(n), name: nm, st: 'wait', acct: null, pid: null, cancelReq: false, note: null, by: null, src: 'staff', at: now, rby: state.staff.role, rid };
+      entries(key).push(e); log(staffName(), 'assist', e); commit(); return { ok: true, e, key };
+    },
     markNoShow(id) { if (S._staff()) return err('auth'); const r = byId(id); if (!r || !['reg', 'wait'].includes(r.e.st)) return err('state'); r.e.st = 'noshow'; log(staffName(), 'noshow', r.e); commit(); return ok(); },
     acceptReturn(id, override) {
       if (S._staff()) return err('auth');
@@ -261,6 +290,18 @@
       state.q[key] = []; log('admin', 'reset', null); commit(); return ok();
     }
   };
+  /* ---- Walk-in registration as seen by the UI: ONE promise-returning call with ONE result shape, in both modes ----
+       resolves to  { ok:true, entry:{id,tok,name,st,at,rby}, key, replayed }   registered (or the same entry again for a retry)
+                    { err:'dupWarn', dup:[{id,tok,st}] }                          probable duplicate: nothing was created
+                    { err:<key> }                                                 refused: nothing was created
+                    { uncertain:true }                                            no trustworthy answer: it MAY have been created - retry with the SAME request id
+       Here (no server: static page / file://) the local simulation answers. When a server is present it is replaced below by the real HTTP call. */
+  const asEntry = e => ({ id: e.id, tok: e.tok, name: e.name, st: e.st, at: e.at, rby: e.rby });
+  S.assisted = (key, name, rid, confirm) => {
+    let r; try { r = S.registerAssisted(key, name, rid, confirm === true); } catch (e) { return Promise.resolve({ uncertain: true }); }
+    return Promise.resolve(r.err ? (r.dup ? { err: r.err, dup: r.dup } : { err: r.err }) : { ok: true, replayed: !!r.replayed, key: r.key, entry: asEntry(r.e) });
+  };
+
   /* ---- Optional shared-server mode ----
      When served by server/server.js the queue lives on the server. This browser then
        1. loads the server's queue state before anything renders (one synchronous request),
@@ -331,7 +372,7 @@
       };
       S.staffLogout = () => { sync('/api/auth/logout'); state.staff = { user: null, role: null, sess: null }; refetch(true); connect(); commit(); };
       const FORWARD = ['reset', 'tick', 'patientSignIn', 'patientSignOut', 'saveProfile', 'deleteProfile', 'register', 'checkIn', 'patientCancel', 'requestReturn',
-        'call', 'callNext', 'start', 'complete', 'markMissed', 'markArrived', 'markNoShow', 'acceptReturn', 'declineReturn', 'cancelVisit', 'resetQueue'];
+        'call', 'callNext', 'start', 'complete', 'markMissed', 'markArrived', 'markNoShow', 'acceptReturn', 'declineReturn', 'cancelVisit', 'resetQueue'];   // (registerAssisted is NOT here: it never runs locally against a server - see S.assisted)
       let chain = Promise.resolve(), lastResync = 0;         // keep commands in order
       const post = (method, args, net, sel) => { chain = chain.then(() => new Promise(done => {
         try {
@@ -360,7 +401,34 @@
           return r;
         };
       });
-      const take = d => {
+      /* Walk-in registration against the server. The browser does NOT run it locally: what the server answers is the only truth.
+         A definite answer is classified; anything else (network error, timeout, 5xx, a reply that is not the expected shape) is "uncertain",
+         because the server may have created the entry - the caller must retry with the same request id, which is safe by design. */
+      const ASSISTED_WATCHDOG_MS = 15000;                       // longer than the XHR timeout: a last resort if no XHR event ever fires
+      S.assisted = (key, name, rid, confirm) => new Promise(done => {
+        let settled = false, dog = null;
+        const fin = r => { if (settled) return; settled = true; clearTimeout(dog); done(r); };
+        const resync = () => { try { refetch(); } catch (e) { /* offline: the next push will catch up */ } };
+        dog = setTimeout(() => fin({ uncertain: true }), ASSISTED_WATCHDOG_MS);
+        try {
+          const x = new XMLHttpRequest(); x.open('POST', '/api/action'); x.setRequestHeader('Content-Type', 'application/json'); x.timeout = 12000;
+          x.onload = () => {
+            let result = { uncertain: true };                   // anything not recognised below stays "uncertain"
+            try {
+              let d = null; try { d = JSON.parse(x.responseText); } catch (e) { /* malformed */ }
+              const s = x.status, r = d && typeof d === 'object' && !Array.isArray(d) && d.result && typeof d.result === 'object' && !Array.isArray(d.result) ? d.result : null;
+              if (s === 200 && r && r.ok === true && r.entry && typeof r.entry.id === 'string' && typeof r.entry.tok === 'string' && typeof r.key === 'string') { resync(); result = { ok: true, replayed: !!r.replayed, key: r.key, entry: r.entry }; }
+              else if (s === 200 && r && typeof r.err === 'string') { resync(); result = r.err === 'dupWarn' ? { err: 'dupWarn', dup: Array.isArray(r.dup) ? r.dup : [] } : { err: r.err }; }
+              else if (s === 401 || s === 403) { try { const okMe = applyMe(); refetch(); if (okMe) { save(); notify(); } } catch (e) { /* ignore */ } result = { err: s === 401 ? 'auth' : 'forbidden' }; }
+              else if (s === 429) result = { err: 'busy' };
+              else if (s === 400 || s === 413 || s === 415) result = d && typeof d.error === 'string' ? { err: 'bad' } : { uncertain: true };   // only the server's own JSON refusal is definite; a bare 400 (connection-level / proxy) never reached the application, so retrying safely is right
+            } catch (e) { result = { uncertain: true }; }
+            fin(result);                                        // always settles, whatever happened while classifying or resyncing
+          };
+          x.onerror = x.ontimeout = x.onabort = () => fin({ uncertain: true });
+          x.send(JSON.stringify({ method: 'registerAssisted', args: confirm === true ? [key, name, rid, true] : [key, name, rid] }));
+        } catch (e) { fin({ uncertain: true }); }
+      });      const take = d => {
         if (!d || !d.shared || (d.rev <= lastRev && !d.view)) return;   // ignore older / duplicate pushes (but always take a "your access changed" push)
         lastRev = Math.max(lastRev, d.rev);
         if (d.view) applyMe();                                          // this browser's server session changed (e.g. signed out in another tab)

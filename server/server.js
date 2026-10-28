@@ -66,7 +66,7 @@ function createApp(opts) {
       const list = [];
       for (const e of sh.q[k]) {
         if (phone && e.acct === phone) list.push(e);
-        else if (allowed(k)) list.push({ id: e.id, tok: e.tok, name: e.name, st: e.st, cancelReq: e.cancelReq, note: e.note, by: e.by });
+        else if (allowed(k)) list.push({ id: e.id, tok: e.tok, name: e.name, st: e.st, cancelReq: e.cancelReq, note: e.note, by: e.by, src: e.src, at: e.at, rby: e.rby });   // src/at/rby: walk-in marker, registration time and staff role (receipt/reprint); the request id (rid) is never sent
         else if (phone) list.push({ id: e.id, tok: e.tok, st: e.st });
         else if (!staff) list.push({ id: '', tok: '', st: e.st });
       }
@@ -140,9 +140,14 @@ function createApp(opts) {
 
   // ---- HTTP API validation ----
   const METHODS = new Set(['reset', 'tick', 'patientSignIn', 'saveProfile', 'deleteProfile', 'register', 'checkIn', 'patientCancel', 'requestReturn',
-    'call', 'callNext', 'start', 'complete', 'markMissed', 'markArrived', 'markNoShow', 'acceptReturn', 'declineReturn', 'cancelVisit', 'resetQueue', 'patientSignOut']);
+    'call', 'callNext', 'start', 'complete', 'markMissed', 'markArrived', 'markNoShow', 'acceptReturn', 'declineReturn', 'cancelVisit', 'resetQueue', 'registerAssisted', 'patientSignOut']);
   const str = (v, n) => typeof v === 'string' && v.length <= n;
   function cleanArgs(method, args) {
+    if (method === 'registerAssisted') {                           // (sessionKey, name, requestId, confirmDuplicate?) - strictly typed, the only 4-argument command
+      if (!Array.isArray(args) || args.length < 3 || args.length > 4) return null;
+      if (!str(args[0], 40) || !str(args[1], 80) || !/^[A-Za-z0-9_-]{16,64}$/.test(args[2] || '') || !(args[3] == null || typeof args[3] === 'boolean')) return null;
+      return args;
+    }
     if (!Array.isArray(args) || args.length > 3) return null;
     if (method === 'saveProfile') { const a = args[0] || {}; return [{ id: str(a.id, 12) ? a.id : undefined, name: str(a.name, 40) ? a.name : '', rel: str(a.rel, 12) ? a.rel : 'Other', yob: a.yob == null ? '' : String(a.yob).slice(0, 4) }]; }
     for (const a of args) if (!(a === null || typeof a === 'boolean' || (typeof a === 'string' && a.length <= 80))) return null;
@@ -208,9 +213,9 @@ function createApp(opts) {
 
   const PATIENT_M = new Set(['saveProfile', 'deleteProfile', 'register', 'checkIn', 'patientCancel', 'requestReturn']);
   const OWNED_M = new Set(['checkIn', 'patientCancel', 'requestReturn']);   // patient commands that name a visit by id
-  const STAFF_M = new Set(['call', 'callNext', 'start', 'complete', 'markMissed', 'markArrived', 'markNoShow', 'acceptReturn', 'declineReturn', 'cancelVisit']);
+  const STAFF_M = new Set(['call', 'callNext', 'start', 'complete', 'markMissed', 'markArrived', 'markNoShow', 'acceptReturn', 'declineReturn', 'cancelVisit', 'registerAssisted']);
   const clinicOf = (method, args) => {                           // clinic a staff command targets (operators are limited to Riverside, as in the UI)
-    if (method === 'callNext') return String(args[0] || '').split(':')[0];
+    if (method === 'callNext' || method === 'registerAssisted') return String(args[0] || '').split(':')[0];   // these name a session key, not an entry id
     const q = S.get().q; for (const k in q) if (q[k].some(e => e.id === args[0])) return k.split(':')[0];
     return null;
   };
@@ -247,6 +252,12 @@ function createApp(opts) {
     return { deny: deny(400, 'bad method') };
   }
 
+  // What the caller is told about an action's outcome: errors by key, plus - for a walk-in registration only - the new entry's receipt fields or the duplicate warning.
+  function resultOf(method, r) {
+    if (r && r.err) return method === 'registerAssisted' && r.dup ? { err: r.err, dup: r.dup.map(d => ({ id: d.id, tok: d.tok, st: d.st })) } : { err: r.err };
+    if (method === 'registerAssisted' && r && r.e) { const e = r.e; return { ok: true, replayed: !!r.replayed, key: r.key, entry: { id: e.id, tok: e.tok, name: e.name, st: e.st, at: e.at, rby: e.rby } }; }
+    return { ok: true };
+  }
   function handleAction(body, who) {
     who = who || { staff: null, patient: null, tokens: {} };
     if (!body || typeof body !== 'object' || !METHODS.has(body.method)) return { status: 400, json: { error: 'bad method' } };
@@ -276,7 +287,7 @@ function createApp(opts) {
         who.patient.sel = str(sel, 12) && acc && acc.profiles.some(p => p.id === sel) ? sel : out.session.patient.sel;
       }
       if (rev === before) { dirty = true; flush(); }            // always give clients the authoritative state, even for rejected actions
-      return { status: 200, json: { ok: true, result: out.result && out.result.err ? { err: out.result.err } : { ok: true }, rev }, cookies };
+      return { status: 200, json: { ok: true, result: resultOf(body.method, out.result), rev }, cookies };
     } catch (e) {
       if (e instanceof StorageError) return { status: 503, json: { error: 'storage unavailable' } };
       logE('Action failed: ' + e.message); return { status: 500, json: { error: 'internal error' } };
