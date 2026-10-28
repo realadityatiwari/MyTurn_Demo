@@ -19,7 +19,7 @@
   function darkTop(back) {
     const st = S.get();
     return '<header class="staffhead">' + (back ? '<button class="icon-btn" data-a="closeSession" aria-label="' + esc(t('s.sessions')) + '">' + MT.icon('back', 24) + '</button>' : '<span style="width:8px"></span>') +
-      '<div class="ttl"><div class="t1">MyTurn <span>' + esc(t('staff')) + '</span></div><div class="t2">' + esc(roleLabel(st.staff.role)) + ' · ' + esc(t('login.demoTag')) + '</div></div>' +
+      '<div class="ttl"><div class="t1">MyTurn <span>' + esc(t('staff')) + '</span></div><div class="t2">' + esc(roleLabel(st.staff.role)) + ' · ' + esc(t(MT.auth && MT.auth.mode === 'live' ? 'login.liveTag' : 'login.demoTag')) + '</div></div>' +
       MT.langToggle() + '<button class="icon-btn so" data-a="logout" aria-label="' + esc(t('logout')) + '" title="' + esc(t('logout')) + '">' + MT.icon('out', 22) + '</button></header>';
   }
   function sheetHtml() {

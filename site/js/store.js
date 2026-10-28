@@ -4,10 +4,7 @@
    Persistence: localStorage (demo only, no backend). */
 (function () {
   'use strict';
-  /* SAMPLE mode (?sample=1): the complete demo with sample patients, simulated entirely in THIS browser. It never contacts the server (no state load,
-     no event stream, no sign-in, no actions), so it cannot read, change or reset the real queue, and it keeps its data under its own storage key. */
-  const SAMPLE = typeof location !== 'undefined' && /^\?(?:[^#]*&)?sample=1(?:&|$)/.test(location.search || '');
-  const KEY = SAMPLE ? 'myturn.sample.v1' : 'myturn.demo.v1';
+  const KEY = 'myturn.demo.v1';
   const MAX_PROFILES = 7;
   let DEFAULT_AVG_MIN = 8;      // average minutes per visit; configurable (server: AVG_SERVICE_MINUTES), shared via state.policy
   const ACTIVE = ['reg', 'wait', 'called', 'svc', 'missed', 'retreq', 'retq'];
@@ -272,7 +269,7 @@
      The browser never sends state, so a stale tab cannot overwrite newer server state.
      Per-browser session data (who is signed in, offline switch, ticker) stays local.
      Without the server (static hosting, file://) none of this runs and the demo behaves as before. */
-  if (!SAMPLE && typeof XMLHttpRequest !== 'undefined' && typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
+  if (typeof XMLHttpRequest !== 'undefined' && typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
     const SHARED = ['accounts', 'q', 'ctr', 'audit', 'policy', 'scenario'];
     const mergeShared = sh => SHARED.forEach(k => { state[k] = sh[k]; });
     const clearSessions = () => { state = Object.assign({}, state, { patient: { phone: null, sel: null }, staff: { user: null, role: null, sess: null }, net: true, ticker: false }); };
@@ -383,5 +380,5 @@
     }
   }
   window.MT = window.MT || {};
-  window.MT.store = S; window.MT.sample = SAMPLE; S.sample = SAMPLE;
+  window.MT.store = S;
 })();

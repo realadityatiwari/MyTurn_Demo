@@ -6,6 +6,6 @@
   "engines": { "node": ">=22.13" },
   "scripts": {
     "start": "node server/server.js",
-    "test": "node server/test/persistence.test.js && node server/test/waiting-time.test.js && node server/test/e2e-fake-telegram.js && node server/test/auth.test.js && node server/test/privacy.test.js && node server/test/webhook.test.js && node server/test/deploy.test.js && node server/test/landing.test.js && node server/test/sample.test.js"
+    "test": "node server/test/persistence.test.js && node server/test/waiting-time.test.js && node server/test/e2e-fake-telegram.js && node server/test/auth.test.js && node server/test/privacy.test.js && node server/test/webhook.test.js && node server/test/deploy.test.js && node server/test/landing.test.js && node server/test/experience.test.js"
   }
 }

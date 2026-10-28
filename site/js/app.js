@@ -47,13 +47,14 @@
     const sl = document.getElementById('site-lang'); if (sl.dataset.l !== MT.lang) { sl.innerHTML = MT.langToggle(); sl.dataset.l = MT.lang; }
     else sl.querySelectorAll('button').forEach(b => { const on = b.dataset.v === MT.lang; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
     document.title = t('site.title');
-    const sn = document.getElementById('sample-note'), nk = (MT.sample ? 's' : MT.serverMode ? 'l' : 'n') + '|' + MT.lang;      // sample = simulated demo; live = real (possibly empty) clinic; n = static/local
-    if (sn && sn.dataset.k !== nk) {
-      sn.dataset.k = nk;
-      sn.innerHTML = MT.sample ? '<b>' + esc(t('sample.on')) + '</b> <a href="./#demo">' + esc(t('sample.exit')) + '</a>'
-        : MT.serverMode ? esc(t('sample.offer')) + ' <a href="?sample=1#demo">' + esc(t('sample.open')) + '</a>' : '';
-    }
-    const w = document.getElementById('wm'); if (w && !w.innerHTML) w.innerHTML = MT.wordmark(24);
+    // Which queue this page shows is decided by the SERVER (/api/auth/me -> mode): 'demo' for everyone, 'live' only for a signed-in real staff member.
+    const mode = MT.auth && MT.auth.mode, live = mode === 'live';
+    if (document.documentElement) document.documentElement.setAttribute('data-mode', mode || 'none');
+    const mn = document.getElementById('mode-note'), nk = (mode || 'none') + '|' + MT.lang;
+    if (mn && mn.dataset.k !== nk) { mn.dataset.k = nk; mn.innerHTML = mode === 'demo' ? '<b>' + esc(t('mode.demo')) + '</b>' : live ? '<b>' + esc(t('mode.live')) + '</b>' : ''; }
+    // The scenario controls and the walkthrough only make sense on the demo queue; never show controls that cannot do what they say.
+    ['ctl', 'step-msg'].forEach(id => { const n = document.getElementById(id); if (n) n.style.display = live ? 'none' : ''; });
+    const aside = document.querySelector('.demo-aside'); if (aside) aside.style.display = live ? 'none' : '';    const w = document.getElementById('wm'); if (w && !w.innerHTML) w.innerHTML = MT.wordmark(24);
     const w2 = document.getElementById('wm2'); if (w2 && !w2.innerHTML) w2.innerHTML = MT.wordmark(22);
   }
   // Scroll reveals: tag blocks once, fade/slide them in the first time they enter the viewport.

@@ -179,10 +179,8 @@
     'login.bad': ["Couldn't sign in. Check the staff ID and password.", 'साइन इन नहीं हो सका। स्टाफ़ आईडी और पासवर्ड जाँचें।'],
     'login.wait': ['Too many attempts. Please wait a few minutes and try again.', 'बहुत अधिक प्रयास। कृपया कुछ मिनट रुककर फिर कोशिश करें।'],
     'ctl.adminOnly': ['Sign in as admin on the Staff phone to use this control.', 'इस नियंत्रण के लिए स्टाफ़ फ़ोन पर एडमिन के रूप में साइन इन करें।'],
-    'sample.on': ['SAMPLE DEMO - simulated patients and queue, stored only in this browser. Not connected to the real clinic queue or to Telegram.', 'नमूना डेमो - नकली मरीज़ और कतार, केवल इस ब्राउज़र में। असली क्लिनिक कतार या टेलीग्राम से जुड़ा नहीं।'],
-    'sample.exit': ['Back to the live clinic view', 'लाइव क्लिनिक व्यू पर वापस'],
-    'sample.offer': ['This is the live clinic view, so it starts empty. See the full walkthrough with sample patients (simulated in your browser; nothing is saved to the clinic).', 'यह लाइव क्लिनिक व्यू है, इसलिए खाली शुरू होता है। नमूना मरीज़ों के साथ पूरा वॉकथ्रू देखें (आपके ब्राउज़र में नकली; क्लिनिक में कुछ सहेजा नहीं जाता)।'],
-    'sample.open': ['Open the sample demo', 'नमूना डेमो खोलें'],
+    'mode.demo': ['DEMO - test data on a separate demo queue. Nothing here is a real patient or the real clinic queue. Everyone using this page shares this demo; Reset demo clears it for all.', 'डेमो - अलग डेमो कतार पर परीक्षण डेटा। यहाँ कुछ भी असली मरीज़ या असली क्लिनिक कतार नहीं है। इस पेज के सभी उपयोगकर्ता यही डेमो साझा करते हैं; डेमो रीसेट सबके लिए इसे साफ़ करता है।'],
+    'mode.live': ['LIVE CLINIC QUEUE - real patients. You are signed in as clinic staff. Sign out to return to the demo.', 'लाइव क्लिनिक कतार - असली मरीज़। आप क्लिनिक स्टाफ़ के रूप में साइन इन हैं। डेमो पर लौटने के लिए साइन आउट करें।'],
     'login.note': ['Production would use organisation sign-in (SSO) with server-side role checks.', 'असली उपयोग में संगठन साइन-इन (SSO) और सर्वर-स्तर पर भूमिका जाँच होगी।'],
     'role.demoUser': ['{u}', '{u}'], 'login.demoTag': ['demo · illustrative data', 'डेमो · उदाहरण डेटा'],
     'role.op':['Queue operator', 'कतार संचालक'], 'role.admin': ['Clinic administrator', 'क्लिनिक प्रशासक'], 'role.line': ['Role: {r}', 'भूमिका: {r}'],
@@ -320,7 +318,7 @@
   });  /* ---- content audit: consistent workflow language, one disclaimer, accurate claims ---- */
   Object.assign(D, {
     'illustrative': ['Sample', 'नमूना'], 's.illus': ['Sample clinics', 'नमूना क्लिनिक'], 's.area': ['Sample clinic', 'नमूना क्लिनिक'],
-    'q.live': ['Sample data · not a live queue', 'नमूना डेटा · असली कतार नहीं'], 'login.demoTag': ['sample data', 'नमूना डेटा'],
+    'q.live': ['Sample data · not a live queue', 'नमूना डेटा · असली कतार नहीं'], 'login.demoTag': ['sample data', 'नमूना डेटा'], 'login.liveTag': ['live queue', 'लाइव कतार'],
     'launch.works': ['Sample clinics are shown for this demo.', 'इस डेमो में नमूना क्लिनिक दिखाए गए हैं।'],
     'login.h': ['Staff sign-in', 'स्टाफ़ साइन-इन'], 'login.title': ['Staff sign-in', 'स्टाफ़ साइन-इन'],
     'login.note': ['Demo-only sign-in. A real deployment would need organisation sign-in and server-side role checks.', 'केवल डेमो साइन-इन। असली उपयोग में संगठन साइन-इन और सर्वर-स्तर की भूमिका जाँच चाहिए।'],

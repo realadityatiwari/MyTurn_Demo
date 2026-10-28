@@ -31,7 +31,7 @@ function runServer(env, { waitFor = /MyTurn server:/, ms = 6000 } = {}) {
 }
 const http = require('http');
 const hreq = (port, method, p, headers, body) => new Promise(resolve => {      // raw http so the Host header can be set (fetch ignores it)
-  const r = http.request({ host: '127.0.0.1', port, method, path: p, headers, agent: false }, x => { let t = ''; x.on('data', d => t += d); x.on('end', () => resolve({ status: x.statusCode, text: async () => t, json: async () => JSON.parse(t) })); });
+  const r = http.request({ host: '127.0.0.1', port, method, path: p, headers, agent: false }, x => { let t = ''; x.on('data', d => t += d); x.on('end', () => resolve({ status: x.statusCode, headers: x.headers, text: async () => t, json: async () => JSON.parse(t) })); });
   r.on('error', () => resolve({ status: 0, text: async () => '', json: async () => ({}) })); if (body) r.write(body); r.end();
 });
 const get = (port, p, host) => hreq(port, 'GET', p, host ? { Host: host } : {});
@@ -116,12 +116,22 @@ const get = (port, p, host) => hreq(port, 'GET', p, host ? { Host: host } : {});
     ok('real process: binds the host-provided PORT, serves /healthz (ok, sqlite), Telegram off without a token', hz.ok === true && hz.storage === 'sqlite' && hz.telegram === 'off', s1.out + s1.err);
     ok('real process: the database was created at DATABASE_PATH on the (pre-existing) volume directory', fs.existsSync(dbp) && !fs.existsSync(path.join(dir, 'server')) && !fs.existsSync(path.join(ROOT, 'server', 'data', 'myturn.db.prodtest')));
     const st = await (await get(port, '/api/state', 'myturn.example')).json(), me = await (await get(port, '/api/auth/me', 'myturn.example')).json(), page = await (await get(port, '/', 'myturn.example')).text();
-    ok('real process: production starts EMPTY (no demo patients), patient web sign-in disabled, no demo credentials', Object.values(st.shared.q).every(l => l.length === 0) && me.patientWeb === 'disabled' && me.demoCredentials === false && me.openControls === false);
+    const dbRows = () => { const { DatabaseSync } = require('node:sqlite'); const d = new DatabaseSync(dbp, { readOnly: true }); try { const r = d.prepare('SELECT shared FROM app_state WHERE id = 1').get(); const s = JSON.parse(r.shared); return { visits: Object.values(s.q).reduce((n, l) => n + l.length, 0), accounts: Object.keys(s.accounts).length, scenario: s.scenario }; } finally { d.close(); } };
+    ok('real process (default DEMO queue ON): the anonymous page is served the isolated DEMO queue - labelled mode "demo", sample data, public demo sign-ins', me.mode === 'demo' && me.demoCredentials === true && st.shared.scenario === 'normal' && Object.values(st.shared.q).reduce((n, l) => n + l.length, 0) === 9);
+    ok('real process: the REAL database starts EMPTY (no demo patients, no accounts, scenario empty) and stays empty while demo visitors act', (() => { const r = dbRows(); return r.visits === 0 && r.accounts === 0 && r.scenario === 'empty'; })());
     ok('real process: page carries the require-server marker (no browser-only fallback); wrong Host is refused (421)', /myturn-require-server/.test(page) && (await get(port, '/api/state', 'evil.example')).status === 421);
-    const login = await hreq(port, 'POST', '/api/auth/login', { Host: 'myturn.example', Origin: 'https://myturn.example', 'Content-Type': 'application/json' }, JSON.stringify({ user: 'admin', password: 'demo' }));
-    ok('real process: demo/demo does not sign in', login.status === 401);
-    ok('startup log summarises mode without secrets (no hash, no token, no origin path)', /Production mode: public host myturn\.example/.test(s1.out) && !s1.out.includes(hash) && !/scrypt\$/.test(s1.out + s1.err));
+    const H = { Host: 'myturn.example', Origin: 'https://myturn.example', 'Content-Type': 'application/json' };
+    const login = await hreq(port, 'POST', '/api/auth/login', H, JSON.stringify({ user: 'admin', password: 'demo' }));
+    const demoAct = await hreq(port, 'POST', '/api/action', Object.assign({ Cookie: (login.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ') }, H), JSON.stringify({ method: 'reset', args: ['missed'] }));
+    ok('real process: admin/demo is only the DEMO admin (demo cookie) - it can reset the demo, and the real database is still untouched', login.status === 200 && (login.headers['set-cookie'] || []).some(c => /^__Host-mtd_staff=|^mtd_staff=/.test(c)) && !(login.headers['set-cookie'] || []).some(c => /(^|__Host-)mt_staff=/.test(c)) && demoAct.status === 200 && (() => { const r = dbRows(); return r.visits === 0 && r.scenario === 'empty'; })());    ok('startup log summarises mode without secrets (no hash, no token, no origin path)', /Production mode: public host myturn\.example/.test(s1.out) && !s1.out.includes(hash) && !/scrypt\$/.test(s1.out + s1.err));
     await s1.kill();
+
+    // with the demo queue switched off the page is the plain live clinic: empty queue, no demo sign-ins at all
+    const portOff = await freePort(), dbOff = F('proc/data/off.db'); const sOff = runServer(pubEnv({ DATABASE_PATH: dbOff, PORT: String(portOff), HOST: '127.0.0.1', DEMO_QUEUE: 'off' })); await sOff.ready;
+    const stO = await (await get(portOff, '/api/state', 'myturn.example')).json(), meO = await (await get(portOff, '/api/auth/me', 'myturn.example')).json();
+    const loginO = await hreq(portOff, 'POST', '/api/auth/login', { Host: 'myturn.example', Origin: 'https://myturn.example', 'Content-Type': 'application/json' }, JSON.stringify({ user: 'admin', password: 'demo' }));
+    ok('real process, DEMO_QUEUE=off: production starts EMPTY (no demo patients), patient web sign-in disabled, no demo credentials, demo/demo does not sign in', Object.values(stO.shared.q).every(l => l.length === 0) && meO.mode === 'live' && meO.patientWeb === 'disabled' && meO.demoCredentials === false && meO.openControls === false && loginO.status === 401);
+    await sOff.kill();
 
     const s2 = runServer(Object.assign({}, good, { HOST: undefined, PORT: undefined, DATABASE_PATH: F('proc/data/other.db') })); await s2.ready; await sleep(100);
     ok('production defaults: all interfaces (0.0.0.0) on port 8080 when the platform sets nothing else', /listening on 0\.0\.0\.0:8080/.test(s2.out) || /already in use/.test(s2.err), s2.out + s2.err); await s2.kill();

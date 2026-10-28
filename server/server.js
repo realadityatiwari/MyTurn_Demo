@@ -160,7 +160,7 @@ function createApp(opts) {
   const staffSessions = new auth.Sessions(Object.assign({ idleMs: 30 * 60e3, absMs: 8 * 3600e3 }, sessionsOpt));
   const patientSessions = new auth.Sessions(Object.assign({ idleMs: 2 * 3600e3, absMs: 12 * 3600e3 }, sessionsOpt));
   const throttle = new auth.Throttle({ now: opts.now || Date.now });
-  const CK = { staff: (cfg.secureCookie ? '__Host-' : '') + 'mt_staff', patient: (cfg.secureCookie ? '__Host-' : '') + 'mt_patient' };
+  const CK = { staff: (cfg.secureCookie ? '__Host-' : '') + (cfg.cookiePrefix || 'mt') + '_staff', patient: (cfg.secureCookie ? '__Host-' : '') + (cfg.cookiePrefix || 'mt') + '_patient' };   // the isolated demo app uses 'mtd' so the two apps' sessions can never be confused
   let demoUsers = null;                                          // local-development credentials, hashed lazily; never used when a real hash is configured or in production
   const usersAsync = async () => {
     if (!cfg.demoCredentials) return cfg.users;
@@ -187,7 +187,7 @@ function createApp(opts) {
   const pendingChecks = new Map();                               // nonce -> { seen }: only requests carrying an unguessable nonce are ever answered
   const clientOf = req => {
     if (req._client) return req._client;
-    const peer = peerOf(req), c = (needsProxyProof && !proxyVerified)
+    const peer = peerOf(req), c = ((needsProxyProof && !proxyVerified) || (opts.identityGate && !opts.identityGate()))
       ? { ip: null, trusted: false, reason: 'proxy-unverified' }
       : auth.resolveClient({ peer, headers: req.headers, proxyHeader: cfg.proxyHeader, trust: proxyTrust });
     if (cfg.proxyHeader && c.reason !== 'proxy-unverified' && !seenReasons.has(c.reason)) {            // one-time operator diagnostics per situation; a client's own address is never logged
@@ -325,6 +325,7 @@ function createApp(opts) {
   const readJson = (req, res, cb, o) => {                       // o.noOrigin: the Telegram webhook (server-to-server, authenticated by its secret header instead)
     if (!(o && o.noOrigin) && !sameOrigin(req)) return sendR(res, deny(403, 'cross-origin request refused'));
     if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) return sendR(res, deny(415, 'application/json required'));
+    if (req._preBody !== undefined) { let b; try { b = JSON.parse(req._preBody); } catch (e) { return sendR(res, deny(400, 'bad json')); } if (!b || typeof b !== 'object') return sendR(res, deny(400, 'bad json')); return cb(b); }   // body already read once by the front router
     let size = 0, buf = '', dead = false;
     req.on('data', c => { size += c.length; if (size > 20000 && !dead) { dead = true; res.on('finish', () => req.destroy()); sendR(res, deny(413, 'payload too large')); } else if (!dead) buf += c; });
     req.on('end', () => { if (dead) return; let body; try { body = JSON.parse(buf); } catch (e) { return sendR(res, deny(400, 'bad json')); } if (!body || typeof body !== 'object') return sendR(res, deny(400, 'bad json')); cb(body); });
@@ -376,7 +377,7 @@ function createApp(opts) {
     if (url === '/api/auth/me' && req.method === 'GET') {
       const w = readAuth(req);
       return send(res, 200, JSON.stringify({ staff: w.staff ? { user: w.staff.user, role: w.staff.role } : null, patient: w.patient ? { phone: w.patient.phone, sel: w.patient.sel } : null,
-        patientWeb: cfg.patientWeb, demoCredentials: !!cfg.demoCredentials, openControls: !!cfg.openControls, staffConfigured: staffConfigured() }));
+        patientWeb: cfg.patientWeb, demoCredentials: !!cfg.demoCredentials, openControls: !!cfg.openControls, staffConfigured: staffConfigured(), mode: cfg.queueMode || 'live' }));
     }
     if (url === '/api/auth/login' && req.method === 'POST') return readJson(req, res, body => { const lc = clientOf(req); if (!lc.trusted) return noIdentity(res); const w = limiter.allow('login:' + lc.ip, cfg.rate.login[0], cfg.rate.login[1]); return w ? tooMany(res, w) : handleLogin(req, body).then(r => sendR(res, r), e => { logE('Login failed: ' + e.message); sendR(res, deny(500, 'internal error')); }); });
     if (url === '/api/auth/logout' && req.method === 'POST') return readJson(req, res, () => {
@@ -391,14 +392,15 @@ function createApp(opts) {
     fs.readFile(f, (e, d) => {
       if (e) return send(res, 404, 'not found', 'text/plain');
       // Production pages tell the browser code that the shared server is REQUIRED: no silent fall-back to the browser-only demo.
-      if (cfg.production && path.basename(f) === 'index.html') d = Buffer.from(String(d).replace('</head>', '<meta name="myturn-require-server" content="1">\n</head>'));
+      if ((cfg.production || cfg.injectRequireServer) && path.basename(f) === 'index.html') d = Buffer.from(String(d).replace('</head>', '<meta name="myturn-require-server" content="1">\n</head>'));
       send(res, 200, d, MIME[path.extname(f)] || 'application/octet-stream');
     });
   };
-  const server = http.createServer((req, res) => {
+  const handler = (req, res) => {
     try { route(req, res); }
     catch (e) { logE('Request failed: ' + e.message); if (!res.headersSent) send(res, 500, '{"error":"internal error"}'); else res.end(); }   // never echo internals
-  });
+  };
+  const server = http.createServer(handler);
   server.requestTimeout = 15000; server.headersTimeout = 10000; server.keepAliveTimeout = 5000;
   server.on('clientError', (e, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); });
   /* verifyProxy(send): probes through the real public path (the app calls its own PUBLIC_ORIGIN): a CONTROL request without the header, then two
@@ -458,11 +460,30 @@ function createApp(opts) {
   }
   const isStorageError = e => e instanceof StorageError;
   const setTelegram = (mode, hook) => { tg.mode = mode; tg.hook = mode === 'webhook' ? hook : null; };   // hook = { secret, handle(update) -> 'ok'|'dup'|'bad'|'retry' }
-  return { S, server, runAs, snapshot, db, markUpdate, unmarkUpdate, isProcessed, isStorageError, setTelegram, flush, authConfig: cfg, verifyProxy, startProxyVerification, proxyState: () => ({ needed: needsProxyProof, verified: proxyVerified, why: lastProxyWhy }), isHealthy: () => healthy, getRev: () => rev, getEpoch: () => epoch,
+  return { S, server, handle: handler, hasStaffSession: req => !!staffSessions.peek(auth.parseCookies(req.headers.cookie)[CK.staff]), runAs, snapshot, db, markUpdate, unmarkUpdate, isProcessed, isStorageError, setTelegram, flush, authConfig: cfg, verifyProxy, startProxyVerification, proxyState: () => ({ needed: needsProxyProof, verified: proxyVerified, why: lastProxyWhy }), isHealthy: () => healthy, getRev: () => rev, getEpoch: () => epoch,
     close: () => { for (const r of clients.keys()) { try { r.end(); } catch (e) {} } server.close(); if (db) db.close(); } };
 }
 
-module.exports = { createApp, loadEnv };
+/* The isolated DEMO queue: a second, fully separate app (in-memory, demo seed, public demo sign-ins, open scenario/reset/step controls). It shares
+   nothing with the real app except configuration of the public origin/cookies and the REAL app's proxy proof (it never weakens it). */
+function createDemoApp(real, extra) {
+  const rc = real.authConfig;
+  return createApp(Object.assign({ env: { NODE_ENV: 'development' }, seedMode: 'demo', dbPath: null }, extra || {}, {
+    auth: { production: false, users: {}, demoCredentials: true, patientWeb: 'demo', openControls: true, allowReset: true, secureCookie: rc.secureCookie, publicOrigin: rc.publicOrigin,
+      proxyHeader: rc.proxyHeader, trustedProxyCidrs: rc.trustedProxyCidrs, proxyAttested: true, cookiePrefix: 'mtd', queueMode: 'demo', injectRequireServer: true, warnings: [], rate: rc.rate },
+    identityGate: () => { const s = real.proxyState(); return !s.needed || s.verified; }          // demo traffic is identified only while the REAL app's proxy proof stands
+  }));
+}
+/* One public site: front router + demo app + the Telegram routing object. Installs itself on the real app's HTTP server. */
+function assembleSite(real, { demoTelegramIds, demoExtra } = {}) {
+  const { createFront, parseDemoIds, telegramApp } = require('./front');
+  const demo = createDemoApp(real, demoExtra), ids = demoTelegramIds instanceof Set ? demoTelegramIds : parseDemoIds(demoTelegramIds);
+  const front = createFront({ real, demo });
+  real.server.removeAllListeners('request'); real.server.on('request', front.route);
+  return { demo, front, demoIds: ids, tgApp: telegramApp({ real, demo, demoIds: ids }), close() { demo.close(); } };
+}
+
+module.exports = { createApp, createDemoApp, assembleSite, loadEnv };
 
 if (require.main === module) {
   if (process.env.MYTURN_SKIP_DOTENV !== '1') loadEnv(path.join(ROOT, '.env'));   // (skipped by tests so a developer's real .env can never leak into them)
@@ -473,20 +494,23 @@ if (require.main === module) {
   // Production never falls back to a default/ephemeral path or to memory: DATABASE_PATH must be set explicitly (checked again in createApp).
   const dbPath = PROD ? (process.env.DATABASE_PATH && process.env.DATABASE_PATH !== 'memory' ? process.env.DATABASE_PATH : null)
     : (process.env.DATABASE_PATH === 'memory' ? null : (process.env.DATABASE_PATH || path.join(ROOT, 'server', 'data', 'myturn.db')));
-  let app, botHandle = null;
+  let app, site = null, botHandle = null;
   try { app = createApp({ dbPath, seedMode: process.env.SEED_MODE }); }
   catch (e) { console.error('Startup refused [' + (e.code || 'ERROR') + ']: ' + e.message); process.exit(1); }   // unsafe production config / bad database: fail closed
   const ac = app.authConfig;
+  // Production serves ONE page: the isolated demo queue for everyone, and the real queue only to server-verified real staff (DEMO_QUEUE=off disables the demo).
+  if ((PROD && process.env.DEMO_QUEUE !== 'off') || process.env.DEMO_QUEUE === 'on') site = assembleSite(app, { demoTelegramIds: process.env.DEMO_TELEGRAM_IDS });
   for (const w of ac.warnings) console.warn('Auth: ' + w);
   console.log('Staff sign-in: ' + (ac.demoCredentials ? 'DEMO credentials (operator/demo, admin/demo) — LOCAL DEVELOPMENT ONLY, not real security'
     : Object.keys(ac.users).length ? 'server-verified (' + Object.keys(ac.users).join(', ') + ')' : 'NOT CONFIGURED — staff cannot sign in (set STAFF_*_PASSWORD_HASH)')
     + '; patient web sign-in: ' + ac.patientWeb + (ac.openControls ? '; presenter controls OPEN (local only)' : ''));
+  if (site) console.log('Demo queue: isolated in-memory DEMO queue served to everyone at /; the real queue is reachable only with a real staff sign-in; Telegram demo identities: ' + site.demoIds.size);
   console.log('Storage: ' + (dbPath ? 'SQLite file ' + path.basename(dbPath) + ' (persistent)' : 'in memory only (data is lost on restart)'));
   if (PROD && !ac.proxyHeader) console.warn('WARNING: TRUST_PROXY_HEADER is not set. If a reverse proxy is in front, every client then looks like the proxy and shares one throttling bucket (set it to cf-connecting-ip on Render or fly-client-ip on Fly.io).');
   if (PROD) console.log('Production mode: public host ' + new URL(ac.publicOrigin).host + ', telegram ' + (process.env.TELEGRAM_BOT_TOKEN ? (process.env.TELEGRAM_MODE || 'polling') : 'off') + ', node ' + process.version + ', listening on ' + HOST + ':' + PORT);
   // Graceful shutdown: every action is persisted synchronously before it is acknowledged, so nothing is pending; stop the bot, close streams and the database (WAL is checkpointed), exit.
   let closing = false;
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { if (closing) return; closing = true; console.log('Shutting down (' + sig + ')'); try { botHandle && botHandle.stop(); } catch (e) { /* ignore */ } app.close(); process.exit(0); });
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { if (closing) return; closing = true; console.log('Shutting down (' + sig + ')'); try { botHandle && botHandle.stop(); } catch (e) { /* ignore */ } app.close(); if (site) site.close(); process.exit(0); });
   if (process.env.AVG_SERVICE_MINUTES) { const r = app.S.setAvgServiceMin(process.env.AVG_SERVICE_MINUTES); if (r.err) console.warn('AVG_SERVICE_MINUTES must be a number from 1 to 120; using the default (8).'); }
   app.server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? 'Port ' + PORT + ' is already in use (is another MyTurn server running?).' : 'Server error: ' + e.message); process.exit(1); });
   app.server.listen(PORT, HOST, () => {
@@ -504,7 +528,7 @@ if (require.main === module) {
       const mode = process.env.TELEGRAM_MODE === 'webhook' ? 'webhook' : 'polling', secret = process.env.TELEGRAM_WEBHOOK_SECRET;
       if (mode === 'webhook' && !require('./auth').validWebhookSecret(secret)) console.error('Telegram bot: TELEGRAM_MODE=webhook needs TELEGRAM_WEBHOOK_SECRET (32-256 chars: A-Z a-z 0-9 _ -). Bot not started; website unaffected.');
       else {
-        const bot = require('./bot').start({ app, token, apiBase: process.env.TELEGRAM_API_BASE || 'https://api.telegram.org', mode, secret });
+        const bot = require('./bot').start({ app: site ? site.tgApp : app, token, apiBase: process.env.TELEGRAM_API_BASE || 'https://api.telegram.org', mode, secret });
         botHandle = bot;
         if (bot.mode) app.setTelegram(bot.mode, { secret, handle: bot.handleUpdate });
       }

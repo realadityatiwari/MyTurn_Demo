@@ -17,8 +17,21 @@ Not a claim of production readiness: the Telegram bot is **not yet connected** (
 | Instances | exactly one (SQLite single writer; sessions/rate limits/SSE in memory) |
 | Client-IP | `TRUST_PROXY_HEADER=cf-connecting-ip`, trusted only after the app's runtime proof (`/healthz` shows `"clientIp":"verified"`; see `DEPLOYMENT.md` §6b). **Never set `PROXY_HEADER_VERIFIED=1`.** |
 
+## One root page, two isolated queues (demo + real)
+`/` is the only page. The server decides which queue a request sees, from facts the browser cannot forge:
+
+| | Demo queue (default for everyone) | Real queue |
+|---|---|---|
+| Reached by | anonymous visitors; sign-in with the public demo logins `operator`/`demo` or `admin`/`demo` | a valid **real** staff session (the real `STAFF_*_PASSWORD_HASH` password) |
+| State | separate in-memory app: sample data (scenario `normal`), simulated patient sign-in (`9876543210`), open scenario/Reset/Step controls | SQLite at `DATABASE_PATH`: empty on first start, never seeded, no public controls |
+| Cookies / limits | `mtd_*`, own rate limiter | `__Host-mt_*`, own rate limiter and login throttle |
+| Banner | "DEMO - test data on a separate demo queue..." | "LIVE CLINIC QUEUE - real patients..." (demo controls and walkthrough hidden) |
+| Telegram | only users whose numeric id is in `DEMO_TELEGRAM_IDS` | everyone else (the default - `DEMO_TELEGRAM_IDS` is unset) |
+
+Code: `server/front.js` (router), `createDemoApp`/`assembleSite` in `server/server.js`. The demo app has no handle on the real state, database, sessions or secrets, so a demo action cannot change real data. Routing never reads a query string or header. `/healthz`, `/telegram/webhook` (secret-token check) and the proxy self-check always go to the real app; the demo sign-in is refused (503) until the real app has proven the proxy header, like the real one.
+Limitations: the demo is **one shared queue** for all visitors, lives in memory (reset on every restart/deploy), and the demo logins are public by design. If you allowlist a Telegram id, that person's first name appears to demo staff. `DEMO_QUEUE=off` removes the demo queue entirely (rollback); `DEMO_QUEUE=on` forces it outside production. Setting either, or `DEMO_TELEGRAM_IDS`, is an environment change - do it with `weeny env` only with the owner's approval.
 ## Environment variables (names only; values are set with `weeny env`, encrypted, injected on start)
-`NODE_ENV=production` · `HOST=127.0.0.1` · `PORT=3000` · `DATABASE_PATH=/data/myturn/myturn.db` · `SEED_MODE=empty` · `TRUST_PROXY_HEADER=cf-connecting-ip` · `PUBLIC_ORIGIN` (exact `https://myturn-kodd.onweeny.com`, no trailing slash) · `STAFF_ADMIN_PASSWORD_HASH` (secret) · `TELEGRAM_MODE=webhook` · `TELEGRAM_WEBHOOK_SECRET` (secret) · `TELEGRAM_BOT_TOKEN` (secret; **not set yet**).
+`NODE_ENV=production` · `HOST=127.0.0.1` · `PORT=3000` · `DATABASE_PATH=/data/myturn/myturn.db` · `SEED_MODE=empty` · `TRUST_PROXY_HEADER=cf-connecting-ip` · `PUBLIC_ORIGIN` (exact `https://myturn-kodd.onweeny.com`, no trailing slash) · `STAFF_ADMIN_PASSWORD_HASH` (secret) · `TELEGRAM_MODE=webhook` · `TELEGRAM_WEBHOOK_SECRET` (secret) · `TELEGRAM_BOT_TOKEN` (secret). Optional, absent by default: `DEMO_QUEUE` (`off` removes the demo queue; production default is on) and `DEMO_TELEGRAM_IDS` (comma-separated numeric Telegram ids routed to the demo queue).
 Optional: `STAFF_OPERATOR_PASSWORD_HASH` (operator account; not set). Never run bare `weeny env myturn` in a shared terminal – it prints values.
 
 ## Redeploy (after a code change)

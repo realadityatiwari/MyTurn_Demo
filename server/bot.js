@@ -6,7 +6,9 @@
 'use strict';
 
 function start({ app, token, apiBase, log = console.log, mode = 'polling', secret }) {
-  const { S, runAs } = app;
+  const { S, runAs } = app;                                  // default queue (the real one)
+  /* Which queue a Telegram user belongs to is decided SERVER-SIDE by app.target(userId) (an operator-configured allowlist of demo identities); no request field can change it. */
+  const target = id => (app.target ? app.target(id) : app);
   if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token)) { console.error('Telegram bot: TELEGRAM_BOT_TOKEN is malformed (expected "<digits>:<secret>"). Bot not started; website unaffected.'); return { stop() {} }; }
   const redact = s => { let t = String(s).split(token).join('<token>'); if (secret) t = t.split(secret).join('<secret>'); return t; };
   const isStorage = e => (app.isStorageError ? app.isStorageError(e) : false) || (e && e.message === 'storage unavailable');
@@ -38,11 +40,12 @@ function start({ app, token, apiBase, log = console.log, mode = 'polling', secre
   const cleanName = u => (([u.first_name, u.last_name].filter(Boolean).join(' ') || 'Telegram user').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40)) || 'Telegram user';
 
   function myEntries(userId) {
-    const out = [], q = S.get().q, key = keyFor(userId);
+    const out = [], q = target(userId).S.get().q, key = keyFor(userId);
     for (const k in q) q[k].forEach(e => { if (e.acct === key) out.push({ e, k, list: q[k] }); });
     return out;
   }
-  function describe(v, withGuide) {
+  function describe(v, withGuide, QT) {
+    const S = (QT || app).S;                                    // the queue this visit lives in
     const { e, k, list } = v, info = S.findSession(k), room = info.session.room;
     const head = 'Token: ' + e.tok + '\n' + info.session.en + ' – ' + info.clinic.en + '\nStatus: ';
     const ahead = list.slice(0, list.indexOf(e)).filter(x => x.st === 'wait').length;
@@ -70,7 +73,7 @@ function start({ app, token, apiBase, log = console.log, mode = 'polling', secre
     const mine = myEntries(userId), active = mine.filter(v => S.ACTIVE.includes(v.e.st));
     const v = active[0] || mine[mine.length - 1];
     if (!v) return send(chat, 'You have no registration yet. Use /register to start.', MENU);
-    return send(chat, (active[0] ? '' : 'No active visit. Your most recent visit:\n\n') + describe(v, guide), MENU);
+    return send(chat, (active[0] ? '' : 'No active visit. Your most recent visit:\n\n') + describe(v, guide, target(userId)), MENU);
   }
   function clinicButtons() {
     return S.CLINICS.filter(c => c.sessions.some(s => s.st === 'open')).map(c => [{ text: c.en, callback_data: 'c:' + c.id }]);
@@ -83,7 +86,7 @@ function start({ app, token, apiBase, log = console.log, mode = 'polling', secre
 
   function doRegister(chat, user, cid, sid, updateId) {
     const info = openSession(cid, sid); if (!info) return send(chat, 'That service is not available for registration.', MENU);
-    const key = keyFor(user.id);
+    const key = keyFor(user.id), QT = target(user.id), S = QT.S, runAs = QT.runAs;
     let out;
     try { out = runAs({ patient: { phone: key, sel: null }, net: true }, () => {
       S.patientSignIn(key);
@@ -92,7 +95,7 @@ function start({ app, token, apiBase, log = console.log, mode = 'polling', secre
       return S.register(info.key, pid);
     }, { claim: updateId }).result; }   /* the update id is recorded as processed in the SAME database transaction as the registration */
     catch (e) { if (isStorage(e)) throw e; log('registration failed:', redact(e.message)); return send(chat, 'Sorry, I could not register you right now. Please try again in a moment.', MENU); }
-    if (out && out.err === 'dup') { const a = myEntries(user.id).filter(v => S.ACTIVE.includes(v.e.st))[0]; return send(chat, 'You already have an active registration, so I did not create another.\n\n' + (a ? describe(a, true) : ''), MENU); }
+    if (out && out.err === 'dup') { const a = myEntries(user.id).filter(v => S.ACTIVE.includes(v.e.st))[0]; return send(chat, 'You already have an active registration, so I did not create another.\n\n' + (a ? describe(a, true, QT) : ''), MENU); }
     if (!out || out.err) return send(chat, 'Sorry, I could not register you right now. Please try again, or ask reception.', MENU);
     return send(chat, 'You are registered (remote registration).\n\nToken: ' + out.e.tok + '\n' + info.session.en + ' – ' + info.clinic.en + '\n\n' +
       'Next step: go to the clinic and check in. Registering here does NOT put you in the waiting queue – tell reception you have arrived and staff will mark you as arrived. Then use /status to follow your turn.', MENU);

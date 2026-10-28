@@ -478,10 +478,10 @@ button.li:active, .team:active { background: rgba(15, 61, 46, .08); }
 .links a:hover { text-decoration: none; background-size: 100% 1.5px; }
 .walk summary i { transition: transform var(--t-med) var(--ease); }
 .step-msg:not(:empty) { animation: mtIn .24s var(--ease) both; }
-.sample-note { margin: 6px 0 0; font-size: 14px; line-height: 1.5; color: rgba(247,243,233,.82); max-width: 68ch; }
-.sample-note:empty { display: none; }
-.sample-note b { color: var(--amber); font-weight: 700; }
-.sample-note a { color: var(--amber); text-decoration: underline; text-underline-offset: 3px; }
+.mode-note { margin: 6px 0 0; font-size: 14px; line-height: 1.5; color: rgba(247,243,233,.82); max-width: 68ch; }
+.mode-note:empty { display: none; }
+.mode-note b { color: var(--amber); font-weight: 700; }
+.mode-note a { color: var(--amber); text-decoration: underline; text-underline-offset: 3px; }
 
 /* phone state-change cues */
 @keyframes mtIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -594,3 +594,5 @@ html[lang='hi'] .sync-pill { text-transform: none; letter-spacing: .02em; font-s
 .hero-art .tk-top { flex-wrap: wrap; gap: 8px 12px; }
 .hero-art .tk-top > span { margin-left: auto; }
 .hero-art .path.track li .lb { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+/* live clinic queue: hide copy that only describes the demo */
+html[data-mode='live'] .demo-tag, html[data-mode='live'] [data-t='disc.p'] { display: none; }
